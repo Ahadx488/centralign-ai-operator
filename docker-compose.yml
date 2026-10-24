@@ -1,0 +1,40 @@
+version: "3.9"
+
+services:
+  mock-env:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -m env.server
+    ports:
+      - "8001:8001" # ERP
+      - "8002:8002" # Vendor Portal
+      - "8003:8003" # Mailbox
+      - "8004:8004" # Ticketing / HR
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./env:/app/env
+      - ./company:/app/company
+
+  agent-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -m core.api
+    ports:
+      - "8000:8000"
+    environment:
+      - LLM_PROVIDER=${LLM_PROVIDER:-gemini}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - MOCK_ERP_URL=http://mock-env:8001
+      - MOCK_VENDOR_PORTAL_URL=http://mock-env:8002
+      - MOCK_MAILBOX_URL=http://mock-env:8003
+      - MOCK_TICKETING_URL=http://mock-env:8004
+    depends_on:
+      - mock-env
+    volumes:
+      - ./core:/app/core
+      - ./company:/app/company
+      - ./artifacts:/app/artifacts

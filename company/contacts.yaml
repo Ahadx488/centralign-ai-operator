@@ -1,0 +1,18 @@
+contacts:
+  finance_manager:
+    name: "Arjun Verma"
+    email: "arjun.verma@company.com"
+    role: "Finance Manager"
+    approval_scope: "Bills and Accounts Payable"
+
+  it_admin:
+    name: "Sneha Patel"
+    email: "sneha.patel@company.com"
+    role: "IT Administrator"
+    approval_scope: "System Access and Credentials"
+
+  hr_lead:
+    name: "Deepak Sharma"
+    email: "deepak.sharma@company.com"
+    role: "People Operations Lead"
+    approval_scope: "Employee Onboarding & HR Tickets"

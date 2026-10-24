@@ -1,0 +1,55 @@
+systems:
+  erp:
+    name: "Acme ERP"
+    url: "http://localhost:8001"
+    description: "Internal accounting and accounts payable system. Used for entering bills, tracking vendor balances, and managing payment schedules."
+    login:
+      type: "form"
+      username_field: "username"
+      password_field: "password"
+      default_credentials: "vault:erp_credentials"
+    capabilities:
+      - "create_bill"
+      - "search_bills"
+      - "view_vendors"
+
+  vendor_portal:
+    name: "SupplierConnect Portal"
+    url: "http://localhost:8002"
+    description: "External portal where approved vendors publish monthly invoices, statements, and delivery notes."
+    login:
+      type: "form"
+      username_field: "email"
+      password_field: "password"
+      default_credentials: "vault:vendor_portal_credentials"
+    capabilities:
+      - "list_invoices"
+      - "download_invoice_pdf"
+      - "search_vendor"
+
+  mailbox:
+    name: "Corporate Mailbox"
+    url: "http://localhost:8003"
+    description: "Internal email inbox where vendors and internal stakeholders email invoices, approvals, and queries."
+    capabilities:
+      - "search_emails"
+      - "read_email"
+      - "download_attachment"
+
+  fileshare:
+    name: "Company Shared Drive"
+    path: "./env/fileshare/data"
+    description: "Shared file repository containing incoming scanned invoices, vendor statements, CSV exports, and receipts."
+    capabilities:
+      - "list_files"
+      - "read_file"
+      - "search_files"
+
+  ticketing:
+    name: "Internal Service Desk & HR Portal"
+    url: "http://localhost:8004"
+    description: "Internal ticketing system for IT requests, HR onboarding, and operational support tickets."
+    capabilities:
+      - "create_ticket"
+      - "update_ticket"
+      - "list_tickets"
