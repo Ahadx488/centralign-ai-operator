@@ -263,8 +263,14 @@ async def test_browser_renamed_elements_fault_resilience():
     Verify that when the renamed_elements fault is active,
     the browser tools interact successfully via semantic text labels and numbered refs.
     """
-    # 1. Activate UI drift fault via API
+    # 1. Activate UI drift fault via API and fault manager
     fault_manager.update_faults({"renamed_elements": True})
+    try:
+        import httpx
+        with httpx.Client(timeout=1.0) as client:
+            client.post(f"{BASE_URL}/__truth/faults", json={"renamed_elements": True})
+    except Exception:
+        pass
 
     # 2. Login to ERP
     await tool_registry.execute("browser_open_url", {"url": f"{BASE_URL}/erp/login"})

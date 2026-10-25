@@ -1,0 +1,55 @@
+name: "Acme ERP"
+system_key: "erp"
+description: "Internal enterprise resource planning system for bills, payables, and accounting registers."
+base_url: "http://localhost:8001/erp"
+
+auth:
+  type: "form"
+  login_url: "http://localhost:8001/erp/login"
+  username_field: "username"
+  password_field: "password"
+  default_credentials: "vault:erp_credentials"
+
+tool_bindings:
+  - "browser_open_url"
+  - "browser_click"
+  - "browser_type_text"
+  - "browser_select_option"
+  - "browser_upload_file"
+  - "browser_snapshot"
+
+endpoints:
+  - name: "bills_list"
+    path: "/erp/bills"
+    method: "GET"
+    description: "View and search posted accounts payable bills"
+  - name: "bill_create"
+    path: "/erp/bills/new"
+    method: "POST"
+    description: "Post a new vendor bill with attachment"
+    fields:
+      - "vendor_name"
+      - "invoice_number"
+      - "amount"
+      - "currency"
+      - "due_date"
+      - "attachment"
+
+dom_hints:
+  login_username: "#username"
+  login_password: "#password"
+  login_submit: "#erp-submit-btn"
+  bill_vendor_input: "#vendor_name"
+  bill_invoice_num_input: "#invoice_number"
+  bill_amount_input: "#amount"
+  bill_currency_select: "#currency"
+  bill_due_date_input: "#due_date"
+  bill_file_input: "#attachment"
+  bill_submit_btn: "#submit-bill-btn"
+
+verification_hints:
+  - target_table: "bills"
+    query_sql: "SELECT * FROM bills WHERE vendor_name = :vendor_name AND invoice_number = :invoice_number"
+    expected_conditions:
+      - "amount == expected_amount"
+      - "due_date == expected_due_date"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import logging
 import os
 import shutil
@@ -8,7 +9,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from core.tools.registry import BaseTool, RiskTier, ToolResult
-from env.db import query_all, query_one
+from env.db import execute_write, query_all, query_one
 from env.seed.generator import INVOICES_DIR
 
 logger = logging.getLogger(__name__)
@@ -112,3 +113,39 @@ class SaveAttachmentTool(BaseTool):
             data={"saved_path": dest_path, "filename": filename, "size_bytes": os.path.getsize(dest_path)},
             evidence_refs=[dest_path],
         )
+
+
+class SendMailArgs(BaseModel):
+    recipient: str = Field(description="Email address of recipient")
+    subject: str = Field(description="Subject line of the email")
+    body: str = Field(description="Body message text of the email")
+    attachment_filename: str | None = Field(default=None, description="Optional filename of attachment")
+
+
+class MailSendTool(BaseTool):
+    name = "mail_send"
+    description = "Send an email message from the corporate mailbox to a recipient (e.g. manager, colleague)."
+    args_schema = SendMailArgs
+    risk_tier = RiskTier.EXTERNAL
+
+    async def _run(self, **kwargs: Any) -> ToolResult:
+        recipient: str = kwargs["recipient"]
+        subject: str = kwargs["subject"]
+        body: str = kwargs["body"]
+        attachment_filename: str | None = kwargs.get("attachment_filename")
+        today_str = datetime.date.today().isoformat()
+
+        sender = "operator@company.com"
+        execute_write(
+            """
+            INSERT INTO emails (sender, recipient, subject, body, attachment_filename, date)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (sender, recipient, subject, body, attachment_filename, today_str),
+        )
+
+        return ToolResult.success(
+            data={"status": "sent", "recipient": recipient, "subject": subject, "date": today_str},
+            evidence_refs=[f"email:sent:{recipient}:{subject}"],
+        )
+

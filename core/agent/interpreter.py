@@ -14,14 +14,14 @@ Your job is to analyze unstructured user tasks and convert them into a structure
 Guidelines:
 1. OUTCOME: A concise definition of the desired end state.
 2. SUCCESS CRITERIA: A list of 2-5 concrete, independently verifiable conditions that must be true when complete.
-   - Example: "A bill for vendor 'Acme Corp Ltd' is submitted in Acme ERP."
+   - Example: "A bill for vendor 'Supplier A' is submitted in the internal ERP."
    - Example: "The bill has invoice amount and due date matching the source invoice document."
    - Example: "The source invoice PDF is attached to the bill in ERP."
 3. CONSTRAINTS: Key rules or boundaries from company procedures, spending thresholds, or safety rules.
 4. UNKNOWNS: Missing information or questions.
 5. BLOCKING vs NON-BLOCKING:
    - Set `is_blocking: true` ONLY when the request is critically ambiguous and cannot begin without human clarification (e.g. "Pay the vendor" when no vendor is named).
-   - If the task names a specific target (e.g. "Find latest invoice from Acme Corp Ltd and enter it into ERP"), `is_blocking` MUST BE false. Exploration and discovery will resolve the exact invoice number, date, and amount.
+   - If the task names a specific target (e.g. "Find latest invoice from Supplier A and enter it into ERP"), `is_blocking` MUST BE false. Exploration and discovery will resolve the exact invoice number, date, and amount.
 """
 
 

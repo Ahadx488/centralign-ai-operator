@@ -15,10 +15,15 @@ from core.agent.models import AgentAction, Goal, Plan, Reflection
 from core.agent.planner import Planner
 from core.agent.reflector import Reflector
 from core.llm.client import LLMClient
+from core.llm.fake import FakeLLM
 from core.llm.models import LLMMessage
+from core.memory.company import CompanyMemoryIndex
+from core.memory.proposed import ProposedMemoryStore
+from core.policy.engine import PolicyEngine
+from core.policy.models import PolicyDecision, PolicyEffect, RunCapabilities
 from core.runs.manager import RunManager
 from core.runs.models import RunRecord, RunStatus, StepRecord
-from core.tools.registry import ToolRegistry, tool_registry
+from core.tools.registry import RiskTier, ToolRegistry, ToolResult, tool_registry
 from core.verify.models import VerificationOutcome
 
 if TYPE_CHECKING:
@@ -66,8 +71,12 @@ class AgentExecutor:
 
         self.interpreter = interpreter or GoalInterpreter(self.llm)
         self.planner = planner or Planner(self.llm)
-        self.reflector = reflector or Reflector(self.llm)
+        self.reflector = reflector or Reflector(None if isinstance(self.llm, FakeLLM) else self.llm)
         self.context_manager = ContextManager(self.run_manager)
+        self.company_memory = CompanyMemoryIndex(company_dir=self.company_dir)
+        self.proposed_memory = ProposedMemoryStore()
+        self.policy_engine = PolicyEngine(policy_file=self.company_dir / "policies.yaml")
+
         if verifier is not None:
             self.verifier = verifier
         else:
@@ -85,32 +94,27 @@ class AgentExecutor:
             except Exception as e:
                 logger.warning(f"Error in step callback: {e}")
 
-    def load_company_context(self) -> str:
-        """Load company systems, procedures, and policies as contextual data."""
+    def load_company_context(self, query: str | None = None) -> str:
+        """Dynamically retrieve relevant company memory, procedures, and policies."""
+        if query:
+            docs = self.company_memory.retrieve(query, top_k=6)
+            return self.company_memory.format_context(docs)
+
         if self._company_context_cache is not None:
             return self._company_context_cache
 
-        context_parts: list[str] = []
-        if self.company_dir.exists():
-            for p in sorted(self.company_dir.rglob("*")):
-                if p.is_file() and p.suffix in {".yaml", ".yml", ".md"}:
-                    try:
-                        rel_path = p.relative_to(self.company_dir)
-                        content = p.read_text(encoding="utf-8").strip()
-                        context_parts.append(f"### File: company/{rel_path}\n```\n{content}\n```")
-                    except Exception as e:
-                        logger.warning(f"Failed to read company file {p}: {e}")
-
-        self._company_context_cache = "\n\n".join(context_parts)
+        docs = self.company_memory.retrieve("", top_k=10)
+        self._company_context_cache = self.company_memory.format_context(docs)
         return self._company_context_cache
 
     async def run(
         self,
         task: str,
         run_id: str | None = None,
+        capabilities: RunCapabilities | None = None,
     ) -> RunRecord:
         """Execute a task from start to completion or pause."""
-        company_context = self.load_company_context()
+        company_context = self.load_company_context(query=task)
 
         # 1. Initialize Run in SQLite
         run = self.run_manager.create_run(task=task, run_id=run_id)
@@ -140,20 +144,21 @@ class AgentExecutor:
         # 4. Transition to RUNNING
         self.run_manager.transition(run.run_id, RunStatus.RUNNING, reason="Starting execution loop")
 
-        return await self._execute_loop(run.run_id, goal, plan, company_context)
+        return await self._execute_loop(run.run_id, goal, plan, company_context, capabilities=capabilities)
 
     async def resume(
         self,
         run_id: str,
         human_input: str | None = None,
         approval_granted: bool = True,
+        capabilities: RunCapabilities | None = None,
     ) -> RunRecord:
         """Resume a paused run after human input or approval."""
         run = self.run_manager.get_run(run_id)
         if not run:
             raise ValueError(f"Run {run_id} not found")
 
-        company_context = self.load_company_context()
+        company_context = self.load_company_context(query=run.task)
         goal = Goal.model_validate(run.goal) if run.goal else Goal(outcome=run.task)
         plan = Plan.model_validate(run.plan) if run.plan else Plan()
         working_memory = dict(run.working_memory)
@@ -163,14 +168,14 @@ class AgentExecutor:
                 working_memory["user_clarification"] = human_input
             self.run_manager.update_run(run_id, working_memory=working_memory)
             self.run_manager.transition(run_id, RunStatus.RUNNING, reason="User input provided, resuming")
-            return await self._execute_loop(run_id, goal, plan, company_context)
+            return await self._execute_loop(run_id, goal, plan, company_context, capabilities=capabilities)
 
         elif run.status == RunStatus.WAITING_APPROVAL:
             if approval_granted:
                 working_memory["approval_status"] = "APPROVED"
                 self.run_manager.update_run(run_id, working_memory=working_memory)
                 self.run_manager.transition(run_id, RunStatus.RUNNING, reason="Approval granted, resuming")
-                return await self._execute_loop(run_id, goal, plan, company_context)
+                return await self._execute_loop(run_id, goal, plan, company_context, capabilities=capabilities)
             else:
                 working_memory["approval_status"] = "REJECTED"
                 self.run_manager.update_run(run_id, working_memory=working_memory)
@@ -187,6 +192,11 @@ class AgentExecutor:
             await self.tools.execute("browser_type_text", {"target": "#email", "text": "supplier@acme.com"})
             await self.tools.execute("browser_type_text", {"target": "#password", "text": "portal_pass123"})
             await self.tools.execute("browser_click", {"target": "#portal-submit-btn"})
+        elif system in {"tickets", "ticketing"}:
+            await self.tools.execute("browser_open_url", {"url": "http://127.0.0.1:8001/tickets/login"})
+            await self.tools.execute("browser_type_text", {"target": "#username", "text": "operator"})
+            await self.tools.execute("browser_type_text", {"target": "#password", "text": "tickets_pass123"})
+            await self.tools.execute("browser_click", {"target": "button[type='submit']"})
         else:
             await self.tools.execute("browser_open_url", {"url": "http://127.0.0.1:8001/erp/login"})
             await self.tools.execute("browser_type_text", {"target": "#username", "text": "admin"})
@@ -199,6 +209,7 @@ class AgentExecutor:
         goal: Goal,
         plan: Plan,
         company_context: str,
+        capabilities: RunCapabilities | None = None,
     ) -> RunRecord:
         """Inner step-by-step execution loop."""
         run = self.run_manager.get_run(run_id)
@@ -291,6 +302,12 @@ class AgentExecutor:
                         RunStatus.COMPLETED,
                         reason="Independent verification PASSED with full evidence",
                     )
+                    # Auto-promote proposed facts from this verified run into active company memory
+                    for fact in self.proposed_memory.get_facts(run_id=run_id, status="PROPOSED"):
+                        if fact.id is not None:
+                            self.proposed_memory.promote_fact(fact.id)
+                    self.company_memory.reindex(additional_facts=self.proposed_memory.get_promoted_facts())
+
                     finish_step = StepRecord(
                         run_id=run_id,
                         step_index=step_index,
@@ -415,18 +432,69 @@ class AgentExecutor:
                 self.run_manager.transition(run_id, RunStatus.WAITING_APPROVAL, reason=f"Awaiting approval for: {action_desc}")
                 return _require_run(self.run_manager.get_run(run_id), run_id)
 
-            # 5. Execute Tool with Transient 500 Backoff Retry
+            # 5. Evaluate Policy Engine before executing tool
             tool_name = action.tool or "snapshot"
-            start_t = time.monotonic()
-            tool_res = await self.tools.execute(tool_name, action.args)
+            tool_def = self.tools.get(tool_name)
+            risk_tier = tool_def.risk_tier if tool_def else RiskTier.READ
 
-            # Fault recovery: Transient 500 retry
-            if not tool_res.ok and ("500" in str(tool_res.error) or "Internal Server Error" in str(tool_res.error)):
-                logger.warning(f"Transient error encountered on tool '{tool_name}'. Retrying with backoff...")
-                await asyncio.sleep(1.0)
+            # If this action was just approved by the user via resume(), bypass policy hold
+            was_approved = working_memory.pop("approval_status", None) == "APPROVED"
+            if was_approved:
+                policy_decision = PolicyDecision.allow("Approved by authorized human operator", risk_tier=risk_tier)
+            else:
+                policy_decision = self.policy_engine.evaluate(
+                    tool_name=tool_name,
+                    tool_args=action.args,
+                    risk_tier=risk_tier,
+                    capabilities=capabilities,
+                    context=working_memory,
+                )
+
+            if policy_decision.effect == PolicyEffect.REQUIRE_APPROVAL:
+                action_desc = f"{tool_name}({action.args})"
+                reason = policy_decision.reason
+                working_memory["pending_approval_action"] = action_desc
+                working_memory["approval_reason"] = reason
+                self.run_manager.update_run(run_id, working_memory=working_memory)
+                pause_step = StepRecord(
+                    run_id=run_id,
+                    step_index=step_index,
+                    intent_id=plan.current_intent.id if plan.current_intent else None,
+                    thought=action.thought,
+                    tool_name=tool_name,
+                    tool_args=action.args,
+                    observation_summary=f"Waiting for manager approval: {action_desc} ({reason})",
+                    ok=True,
+                    policy_decision=policy_decision.effect.value,
+                    policy_reason=reason,
+                    tokens=tokens_for_step,
+                )
+                self._record_and_notify_step(run_id, pause_step)
+                self.run_manager.transition(
+                    run_id,
+                    RunStatus.WAITING_APPROVAL,
+                    reason=f"Policy hold: {reason}",
+                )
+                return _require_run(self.run_manager.get_run(run_id), run_id)
+
+            elif policy_decision.effect == PolicyEffect.DENY:
+                logger.warning(f"Action '{tool_name}' DENIED by policy: {policy_decision.reason}")
+                tool_res = ToolResult.failure(
+                    error=f"DENIED by policy rule '{policy_decision.rule_id}': {policy_decision.reason}"
+                )
+                duration_ms = 0.0
+            else:
+                # ALLOW
+                start_t = time.monotonic()
                 tool_res = await self.tools.execute(tool_name, action.args)
 
-            duration_ms = (time.monotonic() - start_t) * 1000.0
+                # Fault recovery: Transient 500 retry
+                if not tool_res.ok and ("500" in str(tool_res.error) or "Internal Server Error" in str(tool_res.error)):
+                    logger.warning(f"Transient error encountered on tool '{tool_name}'. Retrying with backoff...")
+                    await asyncio.sleep(1.0)
+                    tool_res = await self.tools.execute(tool_name, action.args)
+
+                duration_ms = (time.monotonic() - start_t) * 1000.0
 
             # 6. Normalize Observation & Offload Artifacts
             obs_summary, obs_data = self.context_manager.normalize_observation(
@@ -460,14 +528,23 @@ class AgentExecutor:
                 current_memory=working_memory,
             )
 
-            # Update working memory
+            # Update working memory & record learned facts to proposed memory
             if reflection.facts_learned:
                 working_memory.update(reflection.facts_learned)
+                for k, v in reflection.facts_learned.items():
+                    if k not in {"session_expired", "auth_required", "active_discrepancies", "options", "pending_question"}:
+                        self.proposed_memory.record_fact(
+                            run_id=run_id,
+                            step_index=step_index,
+                            category="learned_fact",
+                            key=k,
+                            value=str(v),
+                        )
 
             # Fault recovery: Session Expiry Mid-Task
             if reflection.facts_learned.get("session_expired"):
                 logger.warning(f"Handling detected session expiry at step {step_index}")
-                target_sys = "portal" if "/portal" in obs_summary else "erp"
+                target_sys = "portal" if "/portal" in obs_summary else ("tickets" if "/tickets" in obs_summary else "erp")
                 await self._recover_auth(run_id, system=target_sys)
                 working_memory.pop("session_expired", None)
                 working_memory.pop("auth_required", None)
@@ -506,6 +583,8 @@ class AgentExecutor:
                 evidence_refs=tool_res.evidence_refs,
                 duration_ms=duration_ms,
                 tokens=tokens_for_step,
+                policy_decision=policy_decision.effect.value,
+                policy_reason=policy_decision.reason,
             )
             self._record_and_notify_step(run_id, step_record)
 

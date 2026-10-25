@@ -90,6 +90,8 @@ class RunManager:
                     evidence_refs_json TEXT,
                     duration_ms REAL DEFAULT 0.0,
                     tokens INTEGER DEFAULT 0,
+                    policy_decision TEXT,
+                    policy_reason TEXT,
                     timestamp TEXT NOT NULL,
                     FOREIGN KEY (run_id) REFERENCES runs (run_id)
                 );
@@ -110,6 +112,14 @@ class RunManager:
                 CREATE INDEX IF NOT EXISTS idx_steps_run_id ON run_steps (run_id);
                 CREATE INDEX IF NOT EXISTS idx_artifacts_run_id ON artifacts (run_id);
             """)
+            try:
+                conn.execute("ALTER TABLE run_steps ADD COLUMN policy_decision TEXT")
+            except Exception:
+                pass
+            try:
+                conn.execute("ALTER TABLE run_steps ADD COLUMN policy_reason TEXT")
+            except Exception:
+                pass
 
     def create_run(self, task: str, run_id: str | None = None) -> RunRecord:
         record = RunRecord(
@@ -281,8 +291,9 @@ class RunManager:
                 INSERT INTO run_steps (
                     step_id, run_id, step_index, intent_id, thought, tool_name,
                     tool_args_json, observation_summary, observation_data_json,
-                    ok, error, evidence_refs_json, duration_ms, tokens, timestamp
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ok, error, evidence_refs_json, duration_ms, tokens,
+                    policy_decision, policy_reason, timestamp
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     step.step_id,
@@ -299,6 +310,8 @@ class RunManager:
                     json.dumps(step.evidence_refs),
                     step.duration_ms,
                     step.tokens,
+                    step.policy_decision,
+                    step.policy_reason,
                     step.timestamp,
                 ),
             )
@@ -336,6 +349,8 @@ class RunManager:
                     evidence_refs=json.loads(r["evidence_refs_json"]) if r["evidence_refs_json"] else [],
                     duration_ms=r["duration_ms"] or 0.0,
                     tokens=r["tokens"] or 0,
+                    policy_decision=r["policy_decision"] if "policy_decision" in r.keys() else None,
+                    policy_reason=r["policy_reason"] if "policy_reason" in r.keys() else None,
                     timestamp=r["timestamp"],
                 )
                 for r in rows

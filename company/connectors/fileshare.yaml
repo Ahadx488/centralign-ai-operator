@@ -1,0 +1,27 @@
+name: "Company Shared Drive"
+system_key: "fileshare"
+description: "Centralized file storage repository containing vendor statements, spreadsheets, PDFs, and access lists."
+base_url: "http://localhost:8001/files"
+
+auth:
+  type: "none"
+
+tool_bindings:
+  - "files_list_dir"
+  - "files_read_file"
+  - "files_write_file"
+  - "files_search_files"
+
+endpoints:
+  - name: "browse_files"
+    path: "/files/browse"
+    method: "GET"
+    description: "Browse files and directories"
+
+dom_hints:
+  file_row: ".file-item"
+  download_link: "a.file-download"
+
+verification_hints:
+  - target_table: "filesystem"
+    query_sql: "CHECK_FILE_EXISTS"

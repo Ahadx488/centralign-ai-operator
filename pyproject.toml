@@ -45,3 +45,11 @@ ignore = ["E501"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = ["yaml", "yaml.*", "pypdf", "pypdf.*", "fpdf2", "fpdf2.*"]
+ignore_missing_imports = true

@@ -18,7 +18,7 @@ from core.tools.browser import (
 from core.tools.files import ListDirTool, ReadFileTool, SearchFilesTool, WriteFileTool
 from core.tools.http import HttpRequestTool
 from core.tools.human import AskUserTool, RequestApprovalTool
-from core.tools.mail import ReadMailTool, SaveAttachmentTool, SearchMailTool
+from core.tools.mail import MailSendTool, ReadMailTool, SaveAttachmentTool, SearchMailTool
 from core.tools.registry import BaseTool, RiskTier, ToolRegistry, ToolResult, tool_registry
 
 
@@ -53,6 +53,7 @@ def register_default_tools(registry: ToolRegistry | None = None) -> ToolRegistry
     target.register(SearchMailTool())
     target.register(ReadMailTool())
     target.register(SaveAttachmentTool())
+    target.register(MailSendTool())
 
     # Human-in-the-loop tools
     target.register(AskUserTool())

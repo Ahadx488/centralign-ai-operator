@@ -1,0 +1,56 @@
+name: "Internal Service Desk & HR Portal"
+system_key: "ticketing"
+description: "Service desk ticketing system for IT support, HR employee onboarding, and operational requests."
+base_url: "http://localhost:8001/tickets"
+
+auth:
+  type: "form"
+  login_url: "http://localhost:8001/tickets/login"
+  username_field: "username"
+  password_field: "password"
+  default_credentials: "vault:tickets_credentials"
+
+tool_bindings:
+  - "browser_open_url"
+  - "browser_click"
+  - "browser_type_text"
+  - "browser_select_option"
+  - "browser_snapshot"
+
+endpoints:
+  - name: "ticket_list"
+    path: "/tickets/list"
+    method: "GET"
+    description: "List service desk tickets with optional status filtering"
+  - name: "ticket_create"
+    path: "/tickets/new"
+    method: "POST"
+    description: "Submit a new IT or HR service ticket"
+    fields:
+      - "title"
+      - "description"
+      - "assignee"
+      - "priority"
+  - name: "ticket_update"
+    path: "/tickets/{ticket_number}/update"
+    method: "POST"
+    description: "Update ticket status (e.g. open, in_progress, resolved, closed) and assignee"
+    fields:
+      - "status"
+      - "assignee"
+
+dom_hints:
+  login_username: "#username"
+  login_password: "#password"
+  login_submit: "#tickets-submit-btn"
+  ticket_row: ".ticket-row"
+  status_badge: ".status-badge"
+  update_status_select: "#status"
+  update_assignee_input: "#assignee"
+  update_submit_btn: "#save-ticket-btn"
+
+verification_hints:
+  - target_table: "tickets"
+    query_sql: "SELECT ticket_number, title, status, assignee FROM tickets WHERE ticket_number = :ticket_number"
+    expected_conditions:
+      - "status == expected_status"

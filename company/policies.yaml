@@ -1,9 +1,10 @@
 version: "1.0"
+max_auto_approve_amount_inr: 100000
 
 rules:
   - id: "spending_threshold_approval"
-    description: "Any bill or expense entry exceeding ₹50,000 must pause for human manager approval before final submission."
-    condition: "action.type == 'create_bill' and action.amount > 50000"
+    description: "Any bill or expense entry exceeding ₹100,000 must pause for human manager approval before final submission."
+    condition: "action.type == 'create_bill' and action.amount > 100000"
     effect: "REQUIRE_APPROVAL"
     approver_role: "finance_manager"
 

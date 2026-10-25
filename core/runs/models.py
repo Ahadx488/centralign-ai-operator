@@ -106,6 +106,8 @@ class StepRecord(BaseModel):
     evidence_refs: list[str] = Field(default_factory=list)
     duration_ms: float = 0.0
     tokens: int = 0
+    policy_decision: str | None = None
+    policy_reason: str | None = None
     timestamp: str = Field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )

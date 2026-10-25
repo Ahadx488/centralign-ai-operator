@@ -1,0 +1,34 @@
+name: "Corporate Mailbox"
+system_key: "mailbox"
+description: "Internal email communication system for vendor invoices, notices, and internal notifications."
+base_url: "http://localhost:8001/mail"
+
+auth:
+  type: "none"
+
+tool_bindings:
+  - "mail_search"
+  - "mail_read"
+  - "mail_save_attachment"
+  - "mail_send"
+
+endpoints:
+  - name: "inbox_list"
+    path: "/mail/inbox"
+    method: "GET"
+    description: "Search and list emails in corporate inbox"
+  - name: "view_email"
+    path: "/mail/view/{email_id}"
+    method: "GET"
+    description: "Read full body and attachments of an email"
+
+dom_hints:
+  search_input: "#mail-search-input"
+  search_btn: "#mail-search-btn"
+  email_subject_link: ".email-subject a"
+
+verification_hints:
+  - target_table: "emails"
+    query_sql: "SELECT * FROM emails WHERE recipient = :recipient ORDER BY id DESC LIMIT 1"
+    expected_conditions:
+      - "recipient == expected_recipient"
