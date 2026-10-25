@@ -25,10 +25,92 @@ class LLMRetryableError(LLMError):
     """Error that is safe to retry (e.g. rate limit, 503, transient network)."""
 
 
+def pydantic_to_gemini_schema(
+    schema_or_model: type[BaseModel] | dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Convert a Pydantic model or standard JSON schema into a Gemini OpenAPI 3.0 compatible Schema.
+    - Resolves all $defs / $ref inlines
+    - Maps type names to uppercase: OBJECT, STRING, INTEGER, NUMBER, BOOLEAN, ARRAY
+    - Strips unsupported keys ($schema, $defs, definitions, title, additionalProperties)
+    - Recursively formats nested properties and array items
+    """
+    if isinstance(schema_or_model, type) and issubclass(schema_or_model, BaseModel):
+        raw_schema = schema_or_model.model_json_schema()
+    else:
+        raw_schema = dict(schema_or_model)
+
+    defs: dict[str, Any] = raw_schema.pop("$defs", {}) or raw_schema.pop("definitions", {})
+
+    def resolve_ref(ref_str: str) -> dict[str, Any]:
+        name = ref_str.split("/")[-1]
+        if name in defs:
+            return dict(defs[name])
+        return {}
+
+    def transform_node(node: dict[str, Any]) -> dict[str, Any]:
+        if "$ref" in node:
+            ref_schema = resolve_ref(node["$ref"])
+            merged = {**ref_schema, **{k: v for k, v in node.items() if k != "$ref"}}
+            return transform_node(merged)
+
+        out: dict[str, Any] = {}
+
+        # Handle type
+        raw_type = node.get("type")
+        if raw_type:
+            if isinstance(raw_type, list):
+                types = [t for t in raw_type if t != "null"]
+                if types:
+                    out["type"] = types[0].upper()
+                if "null" in raw_type:
+                    out["nullable"] = True
+            elif isinstance(raw_type, str):
+                out["type"] = raw_type.upper()
+
+        # Handle anyOf (commonly used for Optional / Union with None)
+        if "anyOf" in node:
+            non_null = [opt for opt in node["anyOf"] if opt.get("type") != "null"]
+            if non_null:
+                transformed = transform_node(non_null[0])
+                out.update(transformed)
+                if len(non_null) < len(node["anyOf"]):
+                    out["nullable"] = True
+
+        if "description" in node:
+            out["description"] = node["description"]
+        if "enum" in node:
+            out["enum"] = node["enum"]
+        if "format" in node:
+            out["format"] = node["format"]
+        if "required" in node:
+            out["required"] = node["required"]
+        if "nullable" in node:
+            out["nullable"] = node["nullable"]
+
+        # Handle properties (for OBJECT)
+        if "properties" in node:
+            out["properties"] = {}
+            for prop_name, prop_val in node["properties"].items():
+                if isinstance(prop_val, dict):
+                    out["properties"][prop_name] = transform_node(prop_val)
+
+        # Handle items (for ARRAY)
+        if "items" in node and isinstance(node["items"], dict):
+            out["items"] = transform_node(node["items"])
+
+        if "type" not in out and "properties" in out:
+            out["type"] = "OBJECT"
+
+        return out
+
+    return transform_node(raw_schema)
+
+
 class LLMClient(abc.ABC):
     """
     Provider-agnostic LLM Client interface.
-    Supports structured output (Pydantic), tool calling, and retries with backoff.
+    Supports structured output (Pydantic), tool calling, token/latency logging, and retries with backoff.
     """
 
     def __init__(
@@ -56,6 +138,7 @@ class LLMClient(abc.ABC):
     ) -> LLMResponse:
         """
         Execute call with automatic retry and backoff on transient errors.
+        Logs latency and token usage on every invocation.
         """
         last_error: Exception | None = None
         backoff = self.initial_backoff_sec
@@ -88,18 +171,33 @@ class LLMClient(abc.ABC):
                             f"Failed to parse structured output into {response_model.__name__}: {e}"
                         )
 
+                # Token and latency logging as required by Phase 0
+                logger.info(
+                    "LLM call completed | provider=%s model=%s latency=%.2fms "
+                    "prompt_tokens=%d completion_tokens=%d total_tokens=%d",
+                    response.provider,
+                    response.model,
+                    response.latency_ms,
+                    response.usage.prompt_tokens,
+                    response.usage.completion_tokens,
+                    response.usage.total_tokens,
+                )
+
                 return response
 
             except LLMRetryableError as e:
                 last_error = e
                 logger.warning(
-                    f"Attempt {attempt}/{self.max_retries} failed with retryable error: {e}"
+                    "Attempt %d/%d failed with retryable error: %s. Retrying in %.3fs...",
+                    attempt,
+                    self.max_retries,
+                    e,
+                    backoff,
                 )
                 if attempt < self.max_retries:
                     time.sleep(backoff)
                     backoff *= self.backoff_multiplier
             except Exception as e:
-                # Non-retryable error
                 logger.error(f"LLM call failed with non-retryable error: {e}")
                 raise
 
@@ -118,35 +216,30 @@ class LLMClient(abc.ABC):
 
 class GeminiLLMClient(LLMClient):
     """
-    Direct Gemini API client via httpx.
-    Supports Gemini 1.5/2.0/2.5 models, JSON mode, and function calling.
+    Direct Gemini API client via httpx REST endpoint.
+    Complies with Google Gemini API v1beta specification.
     """
 
     def __init__(
         self,
         model: str = "gemini-2.5-flash",
         api_key: str | None = None,
-        **kwargs,
+        **kwargs: Any,
     ):
         api_key = api_key or os.getenv("GEMINI_API_KEY")
         super().__init__(model=model, api_key=api_key, **kwargs)
         self.base_url = "https://generativelanguage.googleapis.com/v1beta/models"
 
-    def _execute_generate(
+    def build_payload(
         self,
         messages: list[LLMMessage],
         tools: list[ToolDefinition] | None = None,
         response_model: type[T] | None = None,
         temperature: float = 0.2,
-    ) -> LLMResponse:
-        if not self.api_key:
-            raise LLMError("GEMINI_API_KEY is not set.")
-
-        url = f"{self.base_url}/{self.model}:generateContent?key={self.api_key}"
-
-        # Convert LLMMessage to Gemini contents format
-        contents = []
-        system_instruction = None
+    ) -> dict[str, Any]:
+        """Construct the Gemini REST payload according to v1beta API spec."""
+        contents: list[dict[str, Any]] = []
+        system_instruction: dict[str, Any] | None = None
 
         for msg in messages:
             if msg.role == "system":
@@ -154,7 +247,7 @@ class GeminiLLMClient(LLMClient):
             elif msg.role == "user":
                 contents.append({"role": "user", "parts": [{"text": msg.content}]})
             elif msg.role == "assistant":
-                parts = []
+                parts: list[dict[str, Any]] = []
                 if msg.content:
                     parts.append({"text": msg.content})
                 if msg.tool_calls:
@@ -195,9 +288,9 @@ class GeminiLLMClient(LLMClient):
 
         if response_model is not None:
             payload["generationConfig"]["responseMimeType"] = "application/json"
-            # Schema definition can also be provided if supported
-            schema = response_model.model_json_schema()
-            payload["generationConfig"]["responseSchema"] = schema
+            payload["generationConfig"]["responseSchema"] = pydantic_to_gemini_schema(
+                response_model
+            )
 
         if tools:
             function_declarations = []
@@ -206,23 +299,17 @@ class GeminiLLMClient(LLMClient):
                     {
                         "name": t.name,
                         "description": t.description,
-                        "parameters": t.parameters,
+                        "parameters": pydantic_to_gemini_schema(t.parameters),
                     }
                 )
             payload["tools"] = [{"functionDeclarations": function_declarations}]
 
-        try:
-            with httpx.Client(timeout=self.timeout_sec) as client:
-                res = client.post(url, json=payload)
-        except httpx.RequestError as e:
-            raise LLMRetryableError(f"Network error communicating with Gemini API: {e}")
+        return payload
 
-        if res.status_code in (429, 500, 502, 503, 504):
-            raise LLMRetryableError(f"Gemini API returned status {res.status_code}: {res.text}")
-        if res.status_code != 200:
-            raise LLMError(f"Gemini API error ({res.status_code}): {res.text}")
-
-        data = res.json()
+    def parse_gemini_response(
+        self, data: dict[str, Any], response_model: type[T] | None = None
+    ) -> LLMResponse:
+        """Parse Gemini REST response payload into unified LLMResponse."""
         candidates = data.get("candidates", [])
         if not candidates:
             return LLMResponse(content="", provider="gemini")
@@ -247,7 +334,6 @@ class GeminiLLMClient(LLMClient):
                     )
                 )
 
-        # Usage metadata
         usage_meta = data.get("usageMetadata", {})
         usage = TokenUsage(
             prompt_tokens=usage_meta.get("promptTokenCount", 0),
@@ -272,6 +358,38 @@ class GeminiLLMClient(LLMClient):
             raw=data,
         )
 
+    def _execute_generate(
+        self,
+        messages: list[LLMMessage],
+        tools: list[ToolDefinition] | None = None,
+        response_model: type[T] | None = None,
+        temperature: float = 0.2,
+    ) -> LLMResponse:
+        if not self.api_key:
+            raise LLMError("GEMINI_API_KEY is not set.")
+
+        url = f"{self.base_url}/{self.model}:generateContent?key={self.api_key}"
+        payload = self.build_payload(
+            messages=messages,
+            tools=tools,
+            response_model=response_model,
+            temperature=temperature,
+        )
+
+        try:
+            with httpx.Client(timeout=self.timeout_sec) as client:
+                res = client.post(url, json=payload)
+        except httpx.RequestError as e:
+            raise LLMRetryableError(f"Network error communicating with Gemini API: {e}") from e
+
+        if res.status_code in (429, 500, 502, 503, 504):
+            raise LLMRetryableError(f"Gemini API returned status {res.status_code}: {res.text}")
+        if res.status_code != 200:
+            raise LLMError(f"Gemini API error ({res.status_code}): {res.text}")
+
+        data = res.json()
+        return self.parse_gemini_response(data, response_model=response_model)
+
 
 class OpenAILLMClient(LLMClient):
     """
@@ -283,28 +401,20 @@ class OpenAILLMClient(LLMClient):
         model: str = "gpt-4o-mini",
         api_key: str | None = None,
         base_url: str = "https://api.openai.com/v1",
-        **kwargs,
+        **kwargs: Any,
     ):
         api_key = api_key or os.getenv("OPENAI_API_KEY")
         super().__init__(model=model, api_key=api_key, **kwargs)
         self.base_url = base_url
 
-    def _execute_generate(
+    def build_payload(
         self,
         messages: list[LLMMessage],
         tools: list[ToolDefinition] | None = None,
         response_model: type[T] | None = None,
         temperature: float = 0.2,
-    ) -> LLMResponse:
-        if not self.api_key:
-            raise LLMError("OPENAI_API_KEY is not set.")
-
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-
-        openai_messages = []
+    ) -> dict[str, Any]:
+        openai_messages: list[dict[str, Any]] = []
         for msg in messages:
             m: dict[str, Any] = {"role": msg.role, "content": msg.content}
             if msg.tool_calls:
@@ -354,28 +464,19 @@ class OpenAILLMClient(LLMClient):
                 for t in tools
             ]
 
-        try:
-            with httpx.Client(timeout=self.timeout_sec) as client:
-                res = client.post(
-                    f"{self.base_url}/chat/completions", headers=headers, json=payload
-                )
-        except httpx.RequestError as e:
-            raise LLMRetryableError(f"Network error communicating with OpenAI API: {e}")
+        return payload
 
-        if res.status_code in (429, 500, 502, 503, 504):
-            raise LLMRetryableError(f"OpenAI API status {res.status_code}: {res.text}")
-        if res.status_code != 200:
-            raise LLMError(f"OpenAI API error ({res.status_code}): {res.text}")
-
-        data = res.json()
+    def parse_openai_response(
+        self, data: dict[str, Any], response_model: type[T] | None = None
+    ) -> LLMResponse:
         choice = data["choices"][0]["message"]
         content = choice.get("content") or ""
         tool_calls: list[ToolCall] = []
 
-        if choice.get("tool_calls"):
+        if "tool_calls" in choice and choice["tool_calls"]:
             for tc in choice["tool_calls"]:
                 fn = tc.get("function", {})
-                args = {}
+                args: dict[str, Any] = {}
                 try:
                     args = json.loads(fn.get("arguments", "{}"))
                 except Exception:
@@ -407,22 +508,59 @@ class OpenAILLMClient(LLMClient):
             raw=data,
         )
 
+    def _execute_generate(
+        self,
+        messages: list[LLMMessage],
+        tools: list[ToolDefinition] | None = None,
+        response_model: type[T] | None = None,
+        temperature: float = 0.2,
+    ) -> LLMResponse:
+        if not self.api_key:
+            raise LLMError("OPENAI_API_KEY is not set.")
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = self.build_payload(
+            messages=messages,
+            tools=tools,
+            response_model=response_model,
+            temperature=temperature,
+        )
+
+        try:
+            with httpx.Client(timeout=self.timeout_sec) as client:
+                res = client.post(
+                    f"{self.base_url}/chat/completions", headers=headers, json=payload
+                )
+        except httpx.RequestError as e:
+            raise LLMRetryableError(f"Network error communicating with OpenAI API: {e}") from e
+
+        if res.status_code in (429, 500, 502, 503, 504):
+            raise LLMRetryableError(f"OpenAI API status {res.status_code}: {res.text}")
+        if res.status_code != 200:
+            raise LLMError(f"OpenAI API error ({res.status_code}): {res.text}")
+
+        data = res.json()
+        return self.parse_openai_response(data, response_model=response_model)
+
 
 def get_llm_client(
     provider: str | None = None,
     model: str | None = None,
     api_key: str | None = None,
-    **kwargs,
+    **kwargs: Any,
 ) -> LLMClient:
     """Factory function to get an LLM client instance."""
     provider = provider or os.getenv("LLM_PROVIDER", "fake").lower()
 
     if provider == "gemini":
-        model = model or os.getenv("LLM_MODEL", "gemini-2.5-flash")
-        return GeminiLLMClient(model=model, api_key=api_key, **kwargs)
+        resolved_model = model or os.getenv("LLM_MODEL") or "gemini-2.5-flash"
+        return GeminiLLMClient(model=resolved_model, api_key=api_key, **kwargs)
     elif provider == "openai":
-        model = model or os.getenv("LLM_MODEL", "gpt-4o-mini")
-        return OpenAILLMClient(model=model, api_key=api_key, **kwargs)
+        resolved_model = model or os.getenv("LLM_MODEL") or "gpt-4o-mini"
+        return OpenAILLMClient(model=resolved_model, api_key=api_key, **kwargs)
     elif provider == "fake":
         from core.llm.fake import FakeLLM
 

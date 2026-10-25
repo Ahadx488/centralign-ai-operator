@@ -5,6 +5,7 @@ from core.llm.client import (
     LLMRetryableError,
     OpenAILLMClient,
     get_llm_client,
+    pydantic_to_gemini_schema,
 )
 from core.llm.fake import FakeLLM
 from core.llm.models import LLMMessage, LLMResponse, TokenUsage, ToolCall, ToolDefinition
@@ -22,4 +23,5 @@ __all__ = [
     "ToolCall",
     "ToolDefinition",
     "get_llm_client",
+    "pydantic_to_gemini_schema",
 ]

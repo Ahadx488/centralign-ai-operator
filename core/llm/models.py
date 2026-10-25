@@ -51,6 +51,20 @@ class LLMResponse(BaseModel):
         if self.parsed is not None and isinstance(self.parsed, dict):
             return model_cls.model_validate(self.parsed)
         if self.content:
-            data = json.loads(self.content)
-            return model_cls.model_validate(data)
+            clean = self.content.strip()
+            if clean.startswith("```json"):
+                clean = clean[7:]
+            elif clean.startswith("```"):
+                clean = clean[3:]
+            clean = clean.removesuffix("```").strip()
+            try:
+                data = json.loads(clean)
+            except json.JSONDecodeError as err:
+                raise ValueError(f"Content is not valid JSON: {err}") from err
+            try:
+                return model_cls.model_validate(data)
+            except Exception as err:
+                raise ValueError(
+                    f"Failed to validate JSON against {model_cls.__name__}: {err}"
+                ) from err
         raise ValueError("No content or parsed object available to validate against model")

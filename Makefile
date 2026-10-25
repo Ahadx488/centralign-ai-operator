@@ -31,6 +31,8 @@ test:
 lint:
 	@echo "Running linter..."
 	@$(RUFF) check .
+	@echo "Running type checker..."
+	@$(VENV)/bin/mypy core
 
 format:
 	@echo "Formatting code..."
