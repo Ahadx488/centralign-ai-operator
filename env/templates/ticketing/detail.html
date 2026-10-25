@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="card" style="max-width: 700px; margin: 0 auto;">
+    <div style="border-bottom: 1px solid var(--border-color); padding-bottom: 16px; margin-bottom: 16px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <h2 style="font-size: 20px; font-weight: 600;" id="ticket-title-detail">{{ ticket.ticket_number }}: {{ ticket.title }}</h2>
+            <span class="badge" style="background: #e2e8f0; font-size: 13px;" id="ticket-status-badge">{{ ticket.status }}</span>
+        </div>
+        <div style="font-size: 13px; color: #64748b; line-height: 1.8;">
+            <div>Assignee: <strong style="color: #0f172a;" id="ticket-assignee-detail">{{ ticket.assignee }}</strong></div>
+            <div>Priority: <span id="ticket-priority-detail">{{ ticket.priority }}</span></div>
+            <div>Created: {{ ticket.created_at }}</div>
+            {% if ticket.resolved_at %}
+                <div>Resolved: {{ ticket.resolved_at }}</div>
+            {% endif %}
+        </div>
+    </div>
+
+    <div style="margin-bottom: 24px;">
+        <label>Description</label>
+        <div style="padding: 12px; background: #f8fafc; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; white-space: pre-wrap;" id="ticket-desc-detail">
+{{ ticket.description }}
+        </div>
+    </div>
+
+    <div style="border-top: 1px solid var(--border-color); padding-top: 20px;">
+        <h3 style="font-size: 16px; font-weight: 600; margin-bottom: 12px;">Update Ticket Status</h3>
+        <form action="/tickets/{{ ticket.ticket_number }}/update" method="post" id="update-ticket-form">
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                <div class="form-group">
+                    <label for="status">Status</label>
+                    <select id="status" name="status" data-testid="ticket-status-select">
+                        <option value="open" {% if ticket.status == 'open' %}selected{% endif %}>Open</option>
+                        <option value="in_progress" {% if ticket.status == 'in_progress' %}selected{% endif %}>In Progress</option>
+                        <option value="resolved" {% if ticket.status == 'resolved' %}selected{% endif %}>Resolved</option>
+                        <option value="closed" {% if ticket.status == 'closed' %}selected{% endif %}>Closed</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="assignee">Assignee</label>
+                    <input type="text" id="assignee" name="assignee" value="{{ ticket.assignee }}" data-testid="ticket-assignee-update">
+                </div>
+            </div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 16px;">
+                <a href="/tickets/list" class="btn btn-secondary btn-sm" id="back-tickets-btn">Back to Ticket List</a>
+                <button type="submit" class="btn btn-sm" id="save-ticket-btn" data-testid="ticket-save-btn">Update Ticket</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}

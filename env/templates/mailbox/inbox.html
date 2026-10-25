@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="card">
+    <div class="actions-bar">
+        <div>
+            <h2 style="font-size: 20px; font-weight: 600;">Corporate Mailbox: Accounts Payable</h2>
+            <p style="font-size: 13px; color: #64748b;">Incoming emails, vendor statements, and invoices sent directly to AP.</p>
+        </div>
+        <form method="get" action="/mail/inbox" class="search-box">
+            <input type="text" name="q" placeholder="Search emails..." value="{{ search_query | default('') }}" id="mail-search-input" data-testid="mail-search-input">
+            <button type="submit" class="btn btn-secondary btn-sm" id="mail-search-btn">Search</button>
+        </form>
+    </div>
+
+    <table id="mailbox-table">
+        <thead>
+            <tr>
+                <th>From</th>
+                <th>Subject</th>
+                <th>Attachment</th>
+                <th>Received Date</th>
+                <th>Action</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for mail in emails %}
+            <tr data-testid="email-row" data-email-id="{{ mail.id }}">
+                <td style="font-weight: 500;" data-testid="email-sender">{{ mail.sender }}</td>
+                <td>
+                    <a href="/mail/view/{{ mail.id }}" style="color: var(--primary); font-weight: 600;" data-testid="email-subject-link">
+                        {{ mail.subject }}
+                    </a>
+                </td>
+                <td>
+                    {% if mail.attachment_filename %}
+                        <a href="/mail/download/{{ mail.attachment_filename }}" class="badge" style="background: #e0f2fe; color: #0369a1; text-decoration: none;" data-testid="email-attachment-pill">
+                            📎 {{ mail.attachment_filename }}
+                        </a>
+                    {% else %}
+                        <span style="color: #94a3b8;">None</span>
+                    {% endif %}
+                </td>
+                <td style="color: #64748b; font-size: 13px;">{{ mail.date }}</td>
+                <td>
+                    <a href="/mail/view/{{ mail.id }}" class="btn btn-secondary btn-sm" data-testid="email-view-btn">View</a>
+                </td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="5" style="text-align: center; color: #64748b; padding: 24px;">No emails found.</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

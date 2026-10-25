@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="card" style="max-width: 750px; margin: 0 auto;">
+    <div style="border-bottom: 1px solid var(--border-color); padding-bottom: 16px; margin-bottom: 16px;">
+        <h2 style="font-size: 20px; font-weight: 600; margin-bottom: 8px;" id="email-subject">{{ email.subject }}</h2>
+        <div style="font-size: 13px; color: #64748b; line-height: 1.8;">
+            <div>From: <strong style="color: #0f172a;" id="email-sender-detail">{{ email.sender }}</strong></div>
+            <div>To: <span id="email-recipient-detail">{{ email.recipient }}</span></div>
+            <div>Date: <span id="email-date-detail">{{ email.date }}</span></div>
+        </div>
+    </div>
+
+    <div style="min-height: 140px; font-size: 14px; white-space: pre-wrap; line-height: 1.6; color: #334155; margin-bottom: 24px;" id="email-body">
+{{ email.body }}
+    </div>
+
+    {% if email.attachment_filename %}
+    <div style="padding: 16px; background: #f8fafc; border: 1px solid var(--border-color); border-radius: 6px; margin-bottom: 24px;">
+        <label>Attached Document</label>
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 8px;">
+            <div style="font-size: 14px; font-weight: 600; color: #0f172a;" id="email-attachment-name">
+                📄 {{ email.attachment_filename }}
+            </div>
+            <a href="/mail/download/{{ email.attachment_filename }}" class="btn btn-sm" id="email-attachment-download-btn" data-testid="email-download-attachment">
+                Download Attachment
+            </a>
+        </div>
+    </div>
+    {% endif %}
+
+    <div style="text-align: right;">
+        <a href="/mail/inbox" class="btn btn-secondary btn-sm" id="back-inbox-btn">Back to Inbox</a>
+    </div>
+</div>
+{% endblock %}

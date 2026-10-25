@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="card">
+    <div class="actions-bar">
+        <div>
+            <h2 style="font-size: 20px; font-weight: 600;">Published Invoices</h2>
+            <p style="font-size: 13px; color: #64748b;">Showing active invoices available for download and processing.</p>
+        </div>
+        <form method="get" action="/portal/invoices" class="search-box">
+            <input type="text" name="q" placeholder="Search by vendor or invoice #..." value="{{ search_query | default('') }}" id="search-input" data-testid="portal-search-input">
+            <button type="submit" class="btn btn-secondary btn-sm" id="search-btn">Filter</button>
+        </form>
+    </div>
+
+    <table id="portal-invoices-table">
+        <thead>
+            <tr>
+                <th>Invoice Number</th>
+                <th>Vendor Name</th>
+                <th>Invoice Date</th>
+                <th>Due Date</th>
+                <th>Amount</th>
+                <th>Currency</th>
+                <th>Status</th>
+                <th>Action</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for inv in invoices %}
+            <tr data-testid="invoice-row" data-invoice-number="{{ inv.invoice_number }}">
+                <td>
+                    <a href="/portal/invoice/{{ inv.invoice_number }}" style="color: var(--primary); font-weight: 600;" data-testid="invoice-link-{{ inv.invoice_number }}">
+                        {{ inv.invoice_number }}
+                    </a>
+                </td>
+                <td data-testid="vendor-name">{{ inv.vendor_name }}</td>
+                <td>{{ inv.invoice_date }}</td>
+                <td>{{ inv.due_date }}</td>
+                <td style="font-weight: 600;" data-testid="amount">{{ "%.2f"|format(inv.amount) }}</td>
+                <td>{{ inv.currency }}</td>
+                <td>
+                    <span class="badge" style="background: #fef3c7; color: #92400e;">{{ inv.status }}</span>
+                </td>
+                <td>
+                    <a href="/portal/download/{{ inv.pdf_filename }}" class="btn btn-secondary btn-sm" download id="download-{{ inv.invoice_number }}" data-testid="download-btn-{{ inv.invoice_number }}">
+                        Download PDF
+                    </a>
+                </td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="8" style="text-align: center; color: #64748b; padding: 24px;">
+                    No invoices matching query.
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

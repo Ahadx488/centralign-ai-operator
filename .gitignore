@@ -35,6 +35,12 @@ artifacts/screenshots/
 artifacts/downloads/
 artifacts/temp/
 
+# Generated Seed Files
+env/fileshare/data/invoices/*.pdf
+env/fileshare/data/*.csv
+!env/fileshare/data/.gitkeep
+!env/fileshare/data/invoices/.gitkeep
+
 # SQLite databases & temp files
 *.sqlite3
 *.db

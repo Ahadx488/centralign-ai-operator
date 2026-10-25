@@ -5,7 +5,7 @@ PIP := $(VENV)/bin/pip
 PYTEST := $(VENV)/bin/pytest
 RUFF := $(VENV)/bin/ruff
 
-.PHONY: all setup test lint format demo eval clean run-env
+.PHONY: all setup test lint format demo eval clean run-env env-up seed
 
 all: setup test
 
@@ -32,15 +32,21 @@ lint:
 	@echo "Running linter..."
 	@$(RUFF) check .
 	@echo "Running type checker..."
-	@$(VENV)/bin/mypy core
+	@$(VENV)/bin/mypy core env
 
 format:
 	@echo "Formatting code..."
 	@$(RUFF) format .
 
-run-env:
-	@echo "Starting mock company environment..."
+seed:
+	@echo "Seeding mock company environment data..."
+	@$(PYTHON) -m env.seed.generator
+
+env-up:
+	@echo "Starting unified mock company environment on http://localhost:8001..."
 	@$(PYTHON) -m env.server
+
+run-env: env-up
 
 demo:
 	@echo "Running demo scenario..."

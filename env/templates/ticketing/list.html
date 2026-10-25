@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="card">
+    <div class="actions-bar">
+        <div>
+            <h2 style="font-size: 20px; font-weight: 600;">Service Desk & HR Tickets</h2>
+            <p style="font-size: 13px; color: #64748b;">Manage user tickets, onboarding requests, and technical operations.</p>
+        </div>
+        <div style="display: flex; gap: 12px;">
+            <a href="/tickets/new" class="btn" id="new-ticket-btn" data-testid="new-ticket-btn">+ Create Ticket</a>
+        </div>
+    </div>
+
+    <table id="tickets-table">
+        <thead>
+            <tr>
+                <th>Ticket #</th>
+                <th>Title</th>
+                <th>Assignee</th>
+                <th>Priority</th>
+                <th>Created</th>
+                <th>Status</th>
+                <th>Action</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for t in tickets %}
+            <tr data-testid="ticket-row" data-ticket-number="{{ t.ticket_number }}">
+                <td>
+                    <a href="/tickets/{{ t.ticket_number }}" style="color: var(--primary); font-weight: 600;" data-testid="ticket-link-{{ t.ticket_number }}">
+                        {{ t.ticket_number }}
+                    </a>
+                </td>
+                <td style="font-weight: 500;" data-testid="ticket-title">{{ t.title }}</td>
+                <td data-testid="ticket-assignee">{{ t.assignee }}</td>
+                <td>
+                    {% if t.priority == 'urgent' or t.priority == 'high' %}
+                        <span class="badge" style="background: #fee2e2; color: #991b1b;">{{ t.priority }}</span>
+                    {% else %}
+                        <span class="badge">{{ t.priority }}</span>
+                    {% endif %}
+                </td>
+                <td style="font-size: 13px; color: #64748b;">{{ t.created_at }}</td>
+                <td>
+                    {% if t.status == 'resolved' or t.status == 'closed' %}
+                        <span class="badge" style="background: #dcfce7; color: #166534;" data-testid="ticket-status">{{ t.status }}</span>
+                    {% else %}
+                        <span class="badge" style="background: #fef3c7; color: #92400e;" data-testid="ticket-status">{{ t.status }}</span>
+                    {% endif %}
+                </td>
+                <td>
+                    <a href="/tickets/{{ t.ticket_number }}" class="btn btn-secondary btn-sm" data-testid="ticket-view-btn-{{ t.ticket_number }}">View / Update</a>
+                </td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="7" style="text-align: center; color: #64748b; padding: 24px;">No tickets found.</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

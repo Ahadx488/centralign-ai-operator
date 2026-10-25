@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="card" style="max-width: 650px; margin: 0 auto;">
+    <h2 style="font-size: 20px; font-weight: 600; margin-bottom: 6px;">New Bill Entry</h2>
+    <p style="font-size: 13px; color: #64748b; margin-bottom: 20px;">Enter vendor bill details into Accounts Payable register.</p>
+
+    <form action="/erp/bills/new" method="post" enctype="multipart/form-data" id="new-bill-form">
+        {% if renamed_elements %}
+            <!-- Renamed / Drifted UI Form Elements -->
+            <div class="form-group">
+                <label for="supplier_entity">Supplier Entity Name</label>
+                <input type="text" id="supplier_entity" name="supplier_entity" required placeholder="e.g. Acme Corp Ltd" data-testid="erp-vendor-input">
+            </div>
+            <div class="form-group">
+                <label for="bill_reference_no">Bill Reference Number</label>
+                <input type="text" id="bill_reference_no" name="bill_reference_no" required placeholder="e.g. INV-ACME-102" data-testid="erp-invoice-input">
+            </div>
+            <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 16px;">
+                <div class="form-group">
+                    <label for="total_payable">Total Amount Payable</label>
+                    <input type="number" step="0.01" id="total_payable" name="total_payable" required placeholder="0.00" data-testid="erp-amount-input">
+                </div>
+                <div class="form-group">
+                    <label for="currency_code">Currency Code</label>
+                    <select id="currency_code" name="currency_code" data-testid="erp-currency-select">
+                        <option value="INR" selected>INR</option>
+                        <option value="USD">USD</option>
+                        <option value="EUR">EUR</option>
+                    </select>
+                </div>
+            </div>
+            <div class="form-group">
+                <label for="payment_due_date">Payment Due Date</label>
+                <input type="text" id="payment_due_date" name="payment_due_date" placeholder="YYYY-MM-DD" required data-testid="erp-due-date-input">
+            </div>
+            <div class="form-group">
+                <label for="bill_document">Original Document File (PDF / Scanned Attachment)</label>
+                <input type="file" id="bill_document" name="bill_document" accept=".pdf,.png,.jpg,.jpeg,.csv" data-testid="erp-attachment-input">
+            </div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 24px;">
+                <a href="/erp/bills" class="btn btn-secondary btn-sm" id="cancel-btn">Cancel</a>
+                <button type="submit" class="btn" id="process-post-bill-btn" data-testid="erp-submit-bill-btn">Process & Post Bill</button>
+            </div>
+        {% else %}
+            <!-- Standard Canonical Form Elements -->
+            <div class="form-group">
+                <label for="vendor_name">Vendor Name</label>
+                <input type="text" id="vendor_name" name="vendor_name" required placeholder="e.g. Acme Corp Ltd" data-testid="erp-vendor-input">
+            </div>
+            <div class="form-group">
+                <label for="invoice_number">Invoice Number</label>
+                <input type="text" id="invoice_number" name="invoice_number" required placeholder="e.g. INV-ACME-102" data-testid="erp-invoice-input">
+            </div>
+            <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 16px;">
+                <div class="form-group">
+                    <label for="amount">Amount</label>
+                    <input type="number" step="0.01" id="amount" name="amount" required placeholder="0.00" data-testid="erp-amount-input">
+                </div>
+                <div class="form-group">
+                    <label for="currency">Currency</label>
+                    <select id="currency" name="currency" data-testid="erp-currency-select">
+                        <option value="INR" selected>INR</option>
+                        <option value="USD">USD</option>
+                        <option value="EUR">EUR</option>
+                    </select>
+                </div>
+            </div>
+            <div class="form-group">
+                <label for="due_date">Due Date</label>
+                <input type="text" id="due_date" name="due_date" placeholder="YYYY-MM-DD" required data-testid="erp-due-date-input">
+            </div>
+            <div class="form-group">
+                <label for="attachment">Invoice Attachment (PDF)</label>
+                <input type="file" id="attachment" name="attachment" accept=".pdf,.png,.jpg,.jpeg,.csv" data-testid="erp-attachment-input">
+            </div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 24px;">
+                <a href="/erp/bills" class="btn btn-secondary btn-sm" id="cancel-btn">Cancel</a>
+                <button type="submit" class="btn" id="submit-bill-btn" data-testid="erp-submit-bill-btn">Submit Bill</button>
+            </div>
+        {% endif %}
+    </form>
+</div>
+{% endblock %}

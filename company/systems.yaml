@@ -1,10 +1,11 @@
 systems:
   erp:
     name: "Acme ERP"
-    url: "http://localhost:8001"
+    url: "http://localhost:8001/erp"
     description: "Internal accounting and accounts payable system. Used for entering bills, tracking vendor balances, and managing payment schedules."
     login:
       type: "form"
+      login_url: "http://localhost:8001/erp/login"
       username_field: "username"
       password_field: "password"
       default_credentials: "vault:erp_credentials"
@@ -15,10 +16,11 @@ systems:
 
   vendor_portal:
     name: "SupplierConnect Portal"
-    url: "http://localhost:8002"
+    url: "http://localhost:8001/portal"
     description: "External portal where approved vendors publish monthly invoices, statements, and delivery notes."
     login:
       type: "form"
+      login_url: "http://localhost:8001/portal/login"
       username_field: "email"
       password_field: "password"
       default_credentials: "vault:vendor_portal_credentials"
@@ -29,7 +31,7 @@ systems:
 
   mailbox:
     name: "Corporate Mailbox"
-    url: "http://localhost:8003"
+    url: "http://localhost:8001/mail"
     description: "Internal email inbox where vendors and internal stakeholders email invoices, approvals, and queries."
     capabilities:
       - "search_emails"
@@ -38,6 +40,7 @@ systems:
 
   fileshare:
     name: "Company Shared Drive"
+    url: "http://localhost:8001/files"
     path: "./env/fileshare/data"
     description: "Shared file repository containing incoming scanned invoices, vendor statements, CSV exports, and receipts."
     capabilities:
@@ -47,8 +50,14 @@ systems:
 
   ticketing:
     name: "Internal Service Desk & HR Portal"
-    url: "http://localhost:8004"
+    url: "http://localhost:8001/tickets"
     description: "Internal ticketing system for IT requests, HR onboarding, and operational support tickets."
+    login:
+      type: "form"
+      login_url: "http://localhost:8001/tickets/login"
+      username_field: "username"
+      password_field: "password"
+      default_credentials: "vault:tickets_credentials"
     capabilities:
       - "create_ticket"
       - "update_ticket"

@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="card">
+    <div class="actions-bar">
+        <div>
+            <h2 style="font-size: 20px; font-weight: 600;">Accounts Payable - Bills Register</h2>
+            <p style="font-size: 13px; color: #64748b;">Internal entered bills, approval states, and payment records.</p>
+        </div>
+        <div style="display: flex; gap: 12px;">
+            <form method="get" action="/erp/bills" class="search-box">
+                <input type="text" name="q" placeholder="Filter bills..." value="{{ search_query | default('') }}" id="erp-search-input" data-testid="erp-search-input">
+                <button type="submit" class="btn btn-secondary btn-sm" id="erp-filter-btn">Search</button>
+            </form>
+            <a href="/erp/bills/new" class="btn" id="new-bill-btn" data-testid="new-bill-btn">+ New Bill</a>
+        </div>
+    </div>
+
+    <table id="erp-bills-table">
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Vendor Name</th>
+                <th>Invoice Reference</th>
+                <th>Amount</th>
+                <th>Currency</th>
+                <th>Due Date</th>
+                <th>Attachment</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for bill in bills %}
+            <tr data-testid="bill-row" data-invoice-number="{{ bill.invoice_number }}">
+                <td>#{{ bill.id }}</td>
+                <td style="font-weight: 600;" data-testid="bill-vendor">{{ bill.vendor_name }}</td>
+                <td data-testid="bill-invoice-number">{{ bill.invoice_number }}</td>
+                <td style="font-weight: 600;" data-testid="bill-amount">{{ "%.2f"|format(bill.amount) }}</td>
+                <td>{{ bill.currency }}</td>
+                <td data-testid="bill-due-date">{{ bill.due_date }}</td>
+                <td>
+                    {% if bill.attachment_filename %}
+                        <a href="/files/download/{{ bill.attachment_filename }}" style="color: var(--primary);" data-testid="bill-attachment-link">
+                            {{ bill.attachment_filename }}
+                        </a>
+                    {% else %}
+                        <span style="color: #94a3b8;">None</span>
+                    {% endif %}
+                </td>
+                <td>
+                    <span class="badge" style="background: #dcfce7; color: #166534;" data-testid="bill-status">{{ bill.status }}</span>
+                </td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="8" style="text-align: center; color: #64748b; padding: 24px;">
+                    No bills recorded yet. Click "+ New Bill" to enter an invoice.
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

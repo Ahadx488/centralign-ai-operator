@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="card">
+    <div class="actions-bar">
+        <div>
+            <h2 style="font-size: 20px; font-weight: 600;">Company Shared File Repository</h2>
+            <p style="font-size: 13px; color: #64748b;">Shared storage path: <code>{{ current_path }}</code></p>
+        </div>
+    </div>
+
+    <table id="fileshare-table">
+        <thead>
+            <tr>
+                <th>File Name</th>
+                <th>Type</th>
+                <th>File Size</th>
+                <th>Action</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in items %}
+            <tr data-testid="file-row" data-filename="{{ item.name }}">
+                <td style="font-weight: 500;">
+                    {% if item.is_dir %}
+                        📁 <strong>{{ item.name }}/</strong>
+                    {% else %}
+                        📄 {{ item.name }}
+                    {% endif %}
+                </td>
+                <td>{{ item.type }}</td>
+                <td style="color: #64748b;">{{ item.size_str }}</td>
+                <td>
+                    {% if item.is_dir %}
+                        <span style="color: #94a3b8;">Directory</span>
+                    {% else %}
+                        <a href="/files/download/{{ item.rel_path }}" class="btn btn-secondary btn-sm" download data-testid="file-download-btn-{{ item.name }}">
+                            Download
+                        </a>
+                    {% endif %}
+                </td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="4" style="text-align: center; color: #64748b; padding: 24px;">No files found in shared folder.</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

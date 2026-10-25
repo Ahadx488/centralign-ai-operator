@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title | default("CentrAlign Mock Environment") }}</title>
+    <style>
+        :root {
+            --bg-color: #f8fafc;
+            --text-color: #0f172a;
+            --card-bg: #ffffff;
+            --border-color: #e2e8f0;
+            --primary: #2563eb;
+            --primary-hover: #1d4ed8;
+            --success: #16a34a;
+            --danger: #dc2626;
+            --warning: #d97706;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            line-height: 1.5;
+            padding-bottom: 40px;
+        }
+        nav.system-nav {
+            background-color: #1e293b;
+            color: #ffffff;
+            padding: 12px 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        nav.system-nav a {
+            color: #94a3b8;
+            text-decoration: none;
+            margin-right: 18px;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        nav.system-nav a.active, nav.system-nav a:hover {
+            color: #ffffff;
+        }
+        header.app-header {
+            background-color: var(--card-bg);
+            border-bottom: 1px solid var(--border-color);
+            padding: 16px 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .app-title { font-size: 18px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+        .badge {
+            font-size: 11px;
+            font-weight: 600;
+            padding: 2px 8px;
+            border-radius: 9999px;
+            background: #e2e8f0;
+            color: #475569;
+        }
+        .container {
+            max-width: 1100px;
+            margin: 24px auto;
+            padding: 0 16px;
+        }
+        .card {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 24px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            margin-bottom: 24px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+            margin-top: 12px;
+        }
+        th, td {
+            text-align: left;
+            padding: 12px 14px;
+            border-bottom: 1px solid var(--border-color);
+        }
+        th {
+            background-color: #f1f5f9;
+            font-weight: 600;
+            color: #475569;
+        }
+        tr:hover { background-color: #f8fafc; }
+        .form-group {
+            margin-bottom: 16px;
+        }
+        label {
+            display: block;
+            font-size: 13px;
+            font-weight: 600;
+            margin-bottom: 6px;
+            color: #334155;
+        }
+        input[type="text"], input[type="email"], input[type="password"], input[type="number"], input[type="date"], select, textarea {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            font-size: 14px;
+            background: #ffffff;
+        }
+        input:focus, select:focus, textarea:focus {
+            outline: 2px solid var(--primary);
+            border-color: transparent;
+        }
+        .btn {
+            display: inline-block;
+            background-color: var(--primary);
+            color: #ffffff;
+            font-size: 14px;
+            font-weight: 500;
+            padding: 9px 16px;
+            border-radius: 6px;
+            border: none;
+            cursor: pointer;
+            text-decoration: none;
+        }
+        .btn:hover { background-color: var(--primary-hover); }
+        .btn-secondary {
+            background-color: #64748b;
+        }
+        .btn-secondary:hover { background-color: #475569; }
+        .btn-sm { padding: 4px 10px; font-size: 12px; }
+        .alert {
+            padding: 12px 16px;
+            border-radius: 6px;
+            margin-bottom: 16px;
+            font-size: 14px;
+        }
+        .alert-error {
+            background-color: #fef2f2;
+            color: #991b1b;
+            border: 1px solid #fecaca;
+        }
+        .alert-success {
+            background-color: #f0fdf4;
+            color: #166534;
+            border: 1px solid #bbf7d0;
+        }
+        .alert-warning {
+            background-color: #fffbeb;
+            color: #92400e;
+            border: 1px solid #fde68a;
+        }
+        .actions-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+        .search-box {
+            display: flex;
+            gap: 8px;
+            width: 320px;
+        }
+    </style>
+</head>
+<body>
+    <nav class="system-nav">
+        <div>
+            <strong style="color: #38bdf8; margin-right: 20px;">CentrAlign Systems</strong>
+            <a href="/portal/invoices" id="nav-portal">Vendor Portal</a>
+            <a href="/erp/bills" id="nav-erp">Acme ERP</a>
+            <a href="/mail/inbox" id="nav-mail">Mailbox</a>
+            <a href="/files/browse" id="nav-files">Shared Files</a>
+            <a href="/tickets/list" id="nav-tickets">Service Desk & HR</a>
+        </div>
+        <div style="font-size: 12px; color: #94a3b8;">
+            <a href="/__truth/state" style="color: #38bdf8;" target="_blank">Truth API</a>
+        </div>
+    </nav>
+
+    <header class="app-header">
+        <div class="app-title">
+            <span>{{ app_name | default("Internal Application") }}</span>
+            <span class="badge">{{ system_name | default("Mock App") }}</span>
+        </div>
+        <div>
+            {% if user %}
+                <span style="font-size: 13px; color: #64748b; margin-right: 12px;">Logged in as: <strong>{{ user }}</strong></span>
+                <a href="{{ logout_url | default('#') }}" class="btn btn-secondary btn-sm" id="logout-btn">Log Out</a>
+            {% endif %}
+        </div>
+    </header>
+
+    <main class="container">
+        {% if error %}
+            <div class="alert alert-error" role="alert" id="error-banner">{{ error }}</div>
+        {% endif %}
+        {% if message %}
+            <div class="alert alert-success" role="status" id="success-banner">{{ message }}</div>
+        {% endif %}
+
+        {% block content %}{% endblock %}
+    </main>
+</body>
+</html>

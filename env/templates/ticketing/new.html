@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="card" style="max-width: 650px; margin: 0 auto;">
+    <h2 style="font-size: 20px; font-weight: 600; margin-bottom: 6px;">Create Support or HR Ticket</h2>
+    <p style="font-size: 13px; color: #64748b; margin-bottom: 20px;">Open a new request for access, onboarding, or system support.</p>
+
+    <form action="/tickets/new" method="post" id="new-ticket-form">
+        <div class="form-group">
+            <label for="title">Ticket Subject / Title</label>
+            <input type="text" id="title" name="title" required placeholder="e.g. Onboard new hire Priya Sharma" data-testid="ticket-title-input">
+        </div>
+        <div class="form-group">
+            <label for="description">Detailed Description</label>
+            <textarea id="description" name="description" rows="4" required placeholder="Specify requirements, access levels, or technical details" data-testid="ticket-desc-input"></textarea>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+            <div class="form-group">
+                <label for="assignee">Assignee</label>
+                <input type="text" id="assignee" name="assignee" value="Sneha Patel" required data-testid="ticket-assignee-input">
+            </div>
+            <div class="form-group">
+                <label for="priority">Priority</label>
+                <select id="priority" name="priority" data-testid="ticket-priority-select">
+                    <option value="low">Low</option>
+                    <option value="medium" selected>Medium</option>
+                    <option value="high">High</option>
+                    <option value="urgent">Urgent</option>
+                </select>
+            </div>
+        </div>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 24px;">
+            <a href="/tickets/list" class="btn btn-secondary btn-sm" id="cancel-ticket-btn">Cancel</a>
+            <button type="submit" class="btn" id="submit-ticket-btn" data-testid="ticket-submit-btn">Submit Ticket</button>
+        </div>
+    </form>
+</div>
+{% endblock %}

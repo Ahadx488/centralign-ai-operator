@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="card" style="max-width: 700px; margin: 0 auto;">
+    <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); padding-bottom: 16px; margin-bottom: 16px;">
+        <div>
+            <h2 style="font-size: 20px; font-weight: 600;">Invoice Reference: {{ invoice.invoice_number }}</h2>
+            <span style="font-size: 13px; color: #64748b;">Issued by: <strong>{{ invoice.vendor_name }}</strong></span>
+        </div>
+        <a href="/portal/download/{{ invoice.pdf_filename }}" class="btn btn-sm" id="detail-download-pdf-btn" data-testid="detail-download-btn">
+            Download PDF
+        </a>
+    </div>
+
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px;">
+        <div>
+            <label>Vendor Entity</label>
+            <div style="font-size: 15px; font-weight: 500;" id="detail-vendor">{{ invoice.vendor_name }}</div>
+        </div>
+        <div>
+            <label>Invoice Number</label>
+            <div style="font-size: 15px; font-weight: 500;" id="detail-invoice-number">{{ invoice.invoice_number }}</div>
+        </div>
+        <div>
+            <label>Invoice Date</label>
+            <div style="font-size: 15px;" id="detail-invoice-date">{{ invoice.invoice_date }}</div>
+        </div>
+        <div>
+            <label>Due Date</label>
+            <div style="font-size: 15px;" id="detail-due-date">{{ invoice.due_date }}</div>
+        </div>
+        <div>
+            <label>Total Amount</label>
+            <div style="font-size: 18px; font-weight: 700; color: var(--primary);" id="detail-amount">{{ invoice.currency }} {{ "%.2f"|format(invoice.amount) }}</div>
+        </div>
+        <div>
+            <label>Payment Status</label>
+            <div><span class="badge" style="background: #fef3c7; color: #92400e;">{{ invoice.status }}</span></div>
+        </div>
+    </div>
+
+    {% if invoice.notes %}
+    <div style="margin-top: 16px; padding: 12px; background: #f8fafc; border: 1px solid var(--border-color); border-radius: 6px;">
+        <label>Document Notes</label>
+        <p style="font-size: 13px; color: #334155;">{{ invoice.notes }}</p>
+    </div>
+    {% endif %}
+
+    <div style="margin-top: 24px; text-align: right;">
+        <a href="/portal/invoices" class="btn btn-secondary btn-sm" id="back-to-invoices-btn">Back to All Invoices</a>
+    </div>
+</div>
+{% endblock %}
