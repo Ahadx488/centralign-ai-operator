@@ -76,7 +76,8 @@ class ListDirTool(BaseTool):
 
 
 class ReadFileArgs(BaseModel):
-    path: str = Field(description="File path to read (supports PDF, CSV, JSON, TXT/Markdown)")
+    path: str | None = Field(default=None, description="File path to read (supports PDF, CSV, JSON, TXT/Markdown)")
+    file_path: str | None = Field(default=None, description="Alternative parameter alias for path")
 
 
 class ReadFileTool(BaseTool):
@@ -86,7 +87,9 @@ class ReadFileTool(BaseTool):
     risk_tier = RiskTier.READ
 
     async def _run(self, **kwargs: Any) -> ToolResult:
-        path: str = kwargs["path"]
+        path = kwargs.get("path") or kwargs.get("file_path")
+        if not path:
+            return ToolResult.failure("Either 'path' or 'file_path' must be specified.")
         safe_path = resolve_safe_path(path)
         if not os.path.exists(safe_path):
             return ToolResult.failure(f"File not found: {path}")

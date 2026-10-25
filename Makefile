@@ -49,8 +49,8 @@ env-up:
 run-env: env-up
 
 demo:
-	@echo "Running demo scenario..."
-	@$(PYTHON) -m core.cli "Find the latest invoice from Company X, extract the amount and due date, enter it into our internal ERP system, and notify me once done."
+	@echo "Running CentrAlign AI Intern-v1 automated demo suite..."
+	@$(PYTHON) -m scripts.demo
 
 eval:
 	@echo "Running evaluation suite..."

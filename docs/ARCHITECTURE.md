@@ -82,3 +82,21 @@ flowchart TD
 ### G. Observation Normalizer & Context Manager
 - Sanitizes large outputs (e.g. raw HTML, huge PDFs) into structured summaries stored in the artifact store.
 - Keeps LLM context window concise, focused, and token-efficient.
+
+---
+
+## 3. Operator Interfaces & Delivery UX
+
+### A. Terminal CLI (`core/cli.py`)
+- Invocation: `python -m core.cli "<task>" --scenario <1-4>`
+- Real-time step-by-step formatted audit stream: Thought $\to$ Tool $\to$ Observation $\to$ Verification.
+- Interactive terminal prompts when run pauses in `WAITING_USER` (clarification) or `WAITING_APPROVAL` (policy check).
+- Outputs final summary scorecard and link to `evidence_bundle.md`.
+
+### B. Web Dashboard (`ui/` mounted on `/ui`)
+- Built with FastAPI + Jinja2 + HTMX for instantaneous startup and zero npm/build overhead.
+- Features:
+  - **Task Launcher Bar:** Natural language prompt input + quick-launch buttons for core demo scenarios.
+  - **Live Run Timeline:** Polled every 1s via HTMX / vanilla JS showing state transitions, living plan intents, and working memory facts.
+  - **Interactive Human-in-the-Loop Cards:** Clickable clarification choices or Approve/Reject buttons that resume the paused run in place.
+  - **Verification & Evidence Viewer:** Ground-truth check results table, field comparison grid (source PDF vs. ERP values), and direct markdown evidence viewing.

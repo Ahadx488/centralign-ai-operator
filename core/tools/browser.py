@@ -221,7 +221,7 @@ class BrowserManager:
         if await ref_loc.count() > 0:
             return ref_loc
 
-        # 3. Try matching visible text / label / name in ref_map (prioritize interactive elements)
+        # 3. Try matching visible text / label / name / id in ref_map (prioritize interactive elements)
         space_target = target.lower().replace("_", " ")
         for ref_id, info in self.ref_map.items():
             if info.tag in ("button", "a", "input", "select", "textarea"):
@@ -230,11 +230,17 @@ class BrowserManager:
                     or (info.label and target.lower() in info.label.lower())
                     or (info.label and space_target in info.label.lower())
                     or (info.name and target.lower() == info.name.lower())
+                    or (info.id and target.lower() == info.id.lower())
                 ):
                     return page.locator(info.selector)
 
         # 4. Try input/textarea/select by name or id attribute
         try:
+            if clean_target in ("upload", "file", "attachment", "document"):
+                file_loc = page.locator('input[type="file"]')
+                if await file_loc.count() > 0:
+                    return file_loc.first
+
             input_loc = page.locator(
                 f'input[name="{target}"], input#{target}, textarea[name="{target}"], select[name="{target}"]'
             )

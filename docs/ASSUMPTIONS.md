@@ -7,12 +7,14 @@ Key operational and architectural assumptions guiding CentrAlign AI:
    - Session cookies / JWTs can expire periodically to test automatic re-authentication capabilities.
 
 2. **Network & System Topology**:
-   - The mock environment runs locally (or containerized via docker-compose) on localhost ports:
-     - ERP: `http://localhost:8001`
-     - Vendor Portal: `http://localhost:8002`
-     - Mailbox: `http://localhost:8003`
-     - Ticketing / HR: `http://localhost:8004`
-     - Fileshare: `./env/fileshare/data`
+   - The unified mock company environment runs on a single local process: `http://localhost:8001`
+     - Vendor Portal: `http://localhost:8001/portal`
+     - Acme ERP: `http://localhost:8001/erp`
+     - Mailbox: `http://localhost:8001/mail`
+     - Shared Files: `http://localhost:8001/files`
+     - Ticketing & Service Desk: `http://localhost:8001/tickets`
+     - Agent Dashboard UI: `http://localhost:8001/ui`
+     - Ground-Truth API: `http://localhost:8001/__truth`
    - External internet connectivity is unnecessary for executing tasks in the mock environment; all communication stays within sandbox or local mock hosts.
 
 3. **Ground-Truth Separation**:

@@ -16,6 +16,7 @@ from env.seed.generator import DATA_DIR, seed_company_data
 from env.ticketing.router import router as ticketing_router
 from env.truth.router import router as truth_router
 from env.vendor_portal.router import router as portal_router
+from ui.router import router as ui_router
 
 
 @asynccontextmanager
@@ -37,6 +38,7 @@ def create_app() -> FastAPI:
     )
 
     # Mount all sub-systems
+    app.include_router(ui_router)
     app.include_router(portal_router)
     app.include_router(erp_router)
     app.include_router(mailbox_router)
@@ -46,7 +48,7 @@ def create_app() -> FastAPI:
 
     @app.get("/", include_in_schema=False)
     async def root_redirect() -> RedirectResponse:
-        return RedirectResponse(url="/portal/invoices")
+        return RedirectResponse(url="/ui")
 
     return app
 

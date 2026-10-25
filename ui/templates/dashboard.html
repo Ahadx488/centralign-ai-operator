@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CentrAlign AI — Agent Dashboard</title>
+    <!-- HTMX for reactive live updates -->
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+    <style>
+        :root {
+            --bg-color: #f8fafc;
+            --text-color: #0f172a;
+            --card-bg: #ffffff;
+            --border-color: #e2e8f0;
+            --primary: #2563eb;
+            --primary-hover: #1d4ed8;
+            --success: #16a34a;
+            --danger: #dc2626;
+            --warning: #d97706;
+            --purple: #7c3aed;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            line-height: 1.5;
+            padding-bottom: 60px;
+        }
+        nav.system-nav {
+            background-color: #0f172a;
+            color: #ffffff;
+            padding: 12px 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-bottom: 1px solid #1e293b;
+        }
+        nav.system-nav a {
+            color: #94a3b8;
+            text-decoration: none;
+            margin-right: 18px;
+            font-size: 13px;
+            font-weight: 500;
+        }
+        nav.system-nav a.active, nav.system-nav a:hover {
+            color: #38bdf8;
+        }
+        .header-bar {
+            background: #ffffff;
+            border-bottom: 1px solid var(--border-color);
+            padding: 16px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .container {
+            max-width: 1380px;
+            margin: 20px auto;
+            padding: 0 20px;
+        }
+        .card {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            margin-bottom: 20px;
+        }
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            background-color: var(--primary);
+            color: #ffffff;
+            font-size: 13px;
+            font-weight: 600;
+            padding: 8px 16px;
+            border-radius: 6px;
+            border: none;
+            cursor: pointer;
+            text-decoration: none;
+            transition: all 0.15s ease;
+        }
+        .btn:hover { background-color: var(--primary-hover); }
+        .btn-secondary { background-color: #f1f5f9; color: #334155; border: 1px solid #cbd5e1; }
+        .btn-secondary:hover { background-color: #e2e8f0; color: #0f172a; }
+        .btn-success { background-color: var(--success); color: #fff; }
+        .btn-success:hover { background-color: #15803d; }
+        .btn-danger { background-color: var(--danger); color: #fff; }
+        .btn-danger:hover { background-color: #b91c1c; }
+        .btn-sm { padding: 5px 12px; font-size: 12px; }
+        input[type="text"] {
+            width: 100%;
+            padding: 9px 12px;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            font-size: 14px;
+            background: #ffffff;
+        }
+        input:focus { outline: 2px solid var(--primary); border-color: transparent; }
+        table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+        th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border-color); }
+        th { background: #f8fafc; font-weight: 600; color: #475569; }
+        .status-pill {
+            display: inline-block;
+            font-size: 11px;
+            font-weight: 700;
+            padding: 3px 10px;
+            border-radius: 9999px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .status-completed { background: #dcfce7; color: #166534; }
+        .status-running { background: #e0f2fe; color: #0369a1; }
+        .status-waiting-user { background: #fef3c7; color: #92400e; }
+        .status-waiting-approval { background: #fae8ff; color: #86198f; }
+        .status-verifying { background: #f1f5f9; color: #475569; }
+        .status-failed { background: #fee2e2; color: #991b1b; }
+        .status-planning { background: #f3f4f6; color: #4b5563; }
+
+        .interactive-card {
+            border-radius: 8px;
+            padding: 16px 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.08);
+        }
+        .card-waiting-user {
+            background: #fffbeb;
+            border: 2px solid #f59e0b;
+        }
+        .card-waiting-approval {
+            background: #faf5ff;
+            border: 2px solid #a855f7;
+        }
+
+        .timeline {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .timeline-step {
+            display: flex;
+            gap: 14px;
+            align-items: flex-start;
+        }
+        .timeline-badge {
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            font-weight: 700;
+            color: #ffffff;
+            flex-shrink: 0;
+            margin-top: 2px;
+        }
+        .timeline-ok { background: #16a34a; }
+        .timeline-fail { background: #dc2626; }
+        .timeline-content {
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 12px 16px;
+            flex: 1;
+        }
+        .runs-list-item {
+            display: block;
+            padding: 12px;
+            border-radius: 6px;
+            text-decoration: none;
+            color: inherit;
+            margin-bottom: 8px;
+            border: 1px solid #e2e8f0;
+            background: #ffffff;
+            transition: all 0.15s ease;
+        }
+        .runs-list-item:hover, .runs-list-item.active {
+            border-color: var(--primary);
+            background: #eff6ff;
+        }
+    </style>
+</head>
+<body>
+    <!-- Top System Navigation -->
+    <nav class="system-nav">
+        <div>
+            <strong style="color: #38bdf8; margin-right: 20px;">CentrAlign AI</strong>
+            <a href="/ui" class="active" id="nav-dashboard">⚡ Agent Dashboard</a>
+            <a href="/portal/invoices" id="nav-portal">Vendor Portal</a>
+            <a href="/erp/bills" id="nav-erp">Acme ERP</a>
+            <a href="/mail/inbox" id="nav-mail">Mailbox</a>
+            <a href="/files/browse" id="nav-files">Shared Files</a>
+            <a href="/tickets/list" id="nav-tickets">Service Desk & HR</a>
+        </div>
+        <div>
+            <a href="/__truth/state" target="_blank" style="color: #38bdf8; font-size: 12px;">Truth API ↗</a>
+        </div>
+    </nav>
+
+    <div class="container">
+        <!-- Task Launcher Bar & Demo Scenarios -->
+        <div class="card" style="margin-top: 10px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                <div>
+                    <h2 style="font-size: 18px; font-weight: 700; color: #0f172a;">Autonomous Goal Launcher</h2>
+                    <p style="font-size: 13px; color: #64748b;">Submit a natural language task or trigger one of the 4 Intern-v1 core demo scenarios.</p>
+                </div>
+                <div style="font-size: 12px; color: #64748b;">
+                    Release Tag: <span class="status-pill status-completed">intern-v1</span>
+                </div>
+            </div>
+
+            <!-- Goal input form -->
+            <form id="launch-form" onsubmit="handleLaunch(event)" style="display: flex; gap: 10px; margin-bottom: 16px;">
+                <input type="text" id="goal-input" name="task" placeholder="e.g. Find latest invoice from Acme Corp Ltd, extract amount and due date, and enter into Acme ERP..." required>
+                <button type="submit" class="btn" style="white-space: nowrap;">⚡ Launch Goal</button>
+            </form>
+
+            <!-- Quick Launch Buttons -->
+            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                <button type="button" class="btn btn-secondary btn-sm" onclick="launchScenario(1)" id="btn-scenario-1">
+                    🎯 1. Happy Path Invoice Flow
+                </button>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="launchScenario(2)" id="btn-scenario-2">
+                    ⚡ 2. Fault Recovery (Session Expiry)
+                </button>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="launchScenario(3)" id="btn-scenario-3">
+                    💬 3. Ambiguous Vendor Clarification
+                </button>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="launchScenario(4)" id="btn-scenario-4">
+                    🛡️ 4. Duplicate Invoice Detection
+                </button>
+            </div>
+        </div>
+
+        <!-- Main Layout: Sidebar (Runs) + Live Run View -->
+        <div style="display: flex; gap: 24px; align-items: flex-start;">
+            <!-- Left Column: Runs History -->
+            <div style="width: 320px; flex-shrink: 0;">
+                <div class="card" style="padding: 16px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                        <h3 style="font-size: 14px; font-weight: 700; color: #0f172a; text-transform: uppercase;">Run History</h3>
+                        <a href="/ui" style="font-size: 12px; color: #2563eb; text-decoration: none;">Refresh</a>
+                    </div>
+                    <div id="runs-list">
+                        {% for r in runs %}
+                        <a href="/ui?run_id={{ r.run_id }}" class="runs-list-item {% if active_run and active_run.run_id == r.run_id %}active{% endif %}">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                                <code style="font-size: 11px; font-weight: 700; color: #475569;">{{ r.run_id[:14] }}</code>
+                                <span class="status-pill status-{{ r.status.value }}" style="font-size: 9px; padding: 2px 6px;">{{ r.status.value }}</span>
+                            </div>
+                            <div style="font-size: 12px; font-weight: 600; color: #1e293b; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 4px;">
+                                {{ r.task }}
+                            </div>
+                            <div style="font-size: 11px; color: #94a3b8;">
+                                {{ r.step_count }} steps &bull; {{ r.created_at[11:19] }}
+                            </div>
+                        </a>
+                        {% else %}
+                        <p style="font-size: 13px; color: #64748b; padding: 12px 0;">No runs recorded yet. Launch a goal above!</p>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Column: Live Run Container -->
+            <div style="flex: 1; min-width: 0;">
+                <div id="live-run-container"
+                     {% if active_run and active_run.status.value in ['running', 'planning', 'verifying', 'waiting_user', 'waiting_approval'] %}
+                     hx-get="/ui/runs/{{ active_run.run_id }}/live"
+                     hx-trigger="every 1s"
+                     {% endif %}>
+                    {% include "live_run.html" %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const activeRunId = "{{ active_run.run_id if active_run else '' }}";
+
+        // Fallback polling for live updates
+        if (activeRunId) {
+            setInterval(async () => {
+                const statusPill = document.querySelector('.status-pill');
+                if (statusPill && ['RUNNING', 'PLANNING', 'VERIFYING', 'WAITING USER', 'WAITING APPROVAL'].some(s => statusPill.innerText.includes(s))) {
+                    try {
+                        const res = await fetch(`/ui/runs/${activeRunId}/live`);
+                        if (res.ok) {
+                            const html = await res.text();
+                            document.getElementById('live-run-container').innerHTML = html;
+                        }
+                    } catch (e) {
+                        console.debug("Polling update:", e);
+                    }
+                }
+            }, 1000);
+        }
+
+        async function handleLaunch(e) {
+            e.preventDefault();
+            const task = document.getElementById('goal-input').value;
+            const res = await fetch('/ui/launch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ task: task })
+            });
+            const data = await res.json();
+            if (data.run_id) {
+                window.location.href = `/ui?run_id=${data.run_id}`;
+            }
+        }
+
+        async function launchScenario(scId) {
+            const res = await fetch(`/ui/launch?scenario=${scId}`, { method: 'POST' });
+            const data = await res.json();
+            if (data.run_id) {
+                window.location.href = `/ui?run_id=${data.run_id}`;
+            }
+        }
+
+        async function submitResume(answer) {
+            const runId = "{{ active_run.run_id if active_run else '' }}";
+            if (!runId) return;
+            await fetch(`/ui/runs/${runId}/resume`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ human_input: answer })
+            });
+            const res = await fetch(`/ui/runs/${runId}/live`);
+            if (res.ok) {
+                document.getElementById('live-run-container').innerHTML = await res.text();
+            }
+        }
+
+        async function submitApprove(approved) {
+            const runId = "{{ active_run.run_id if active_run else '' }}";
+            if (!runId) return;
+            await fetch(`/ui/runs/${runId}/approve`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ approved: approved })
+            });
+            const res = await fetch(`/ui/runs/${runId}/live`);
+            if (res.ok) {
+                document.getElementById('live-run-container').innerHTML = await res.text();
+            }
+        }
+    </script>
+</body>
+</html>

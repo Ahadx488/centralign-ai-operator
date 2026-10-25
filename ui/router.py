@@ -1,0 +1,227 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+from typing import Any
+from uuid import uuid4
+
+from fastapi import APIRouter, Body, Query, Request, Response
+from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.templating import Jinja2Templates
+
+from core.agent.executor import AgentExecutor
+from core.agent.reflector import Reflector
+from core.llm.client import get_llm_client
+from core.runs.manager import RunManager
+from core.runs.models import RunRecord
+from core.scenarios import get_scenario_llm
+from core.tools import register_default_tools, tool_registry
+from core.verify.verifier import IndependentVerifier
+from env.faults.manager import fault_manager
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/ui", tags=["Dashboard"])
+
+TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
+templates = Jinja2Templates(directory=TEMPLATES_DIR)
+
+RUNS_DB_PATH = "artifacts/runs.db"
+ARTIFACTS_DIR = "artifacts"
+
+# Global registry of active in-memory executors for paused runs
+active_executors: dict[str, AgentExecutor] = {}
+run_tasks: dict[str, asyncio.Task[Any]] = {}
+
+
+def get_run_manager() -> RunManager:
+    return RunManager(db_path=RUNS_DB_PATH, artifacts_dir=ARTIFACTS_DIR)
+
+
+def load_evidence_bundle(run_id: str) -> dict[str, Any] | None:
+    bundle_path = os.path.join(ARTIFACTS_DIR, "runs", run_id, "evidence_bundle.json")
+    if os.path.exists(bundle_path):
+        try:
+            with open(bundle_path) as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"Failed to load evidence bundle for {run_id}: {e}")
+    return None
+
+
+@router.get("", response_class=HTMLResponse)
+async def dashboard_index(request: Request, run_id: str | None = None) -> Response:
+    """Render the main CentrAlign Agent Dashboard."""
+    rm = get_run_manager()
+    runs = rm.list_runs(limit=30)
+
+    active_run: RunRecord | None = None
+    if run_id:
+        active_run = rm.get_run(run_id)
+    elif runs:
+        active_run = runs[0]
+
+    steps = rm.get_steps(active_run.run_id) if active_run else []
+    evidence_bundle = load_evidence_bundle(active_run.run_id) if active_run else None
+    evidence_md_path = os.path.join(ARTIFACTS_DIR, "runs", active_run.run_id, "evidence_bundle.md") if active_run else ""
+
+    return templates.TemplateResponse(
+        request=request,
+        name="dashboard.html",
+        context={
+            "runs": runs,
+            "active_run": active_run,
+            "run": active_run,
+            "steps": steps,
+            "verification_bundle": evidence_bundle,
+            "evidence_file_exists": os.path.exists(evidence_md_path),
+        },
+    )
+
+
+@router.get("/runs/{run_id}/live", response_class=HTMLResponse)
+async def live_run_partial(request: Request, run_id: str) -> Response:
+    """Return partial HTML for HTMX polling of live run progress."""
+    rm = get_run_manager()
+    run = rm.get_run(run_id)
+    steps = rm.get_steps(run_id) if run else []
+    evidence_bundle = load_evidence_bundle(run_id) if run else None
+    evidence_md_path = os.path.join(ARTIFACTS_DIR, "runs", run_id, "evidence_bundle.md")
+
+    return templates.TemplateResponse(
+        request=request,
+        name="live_run.html",
+        context={
+            "run": run,
+            "steps": steps,
+            "verification_bundle": evidence_bundle,
+            "evidence_file_exists": os.path.exists(evidence_md_path),
+        },
+    )
+
+
+@router.post("/launch")
+async def launch_run(
+    task_body: dict[str, Any] = Body(default_factory=dict),
+    scenario: int | str | None = Query(default=None),
+) -> dict[str, Any]:
+    """Launch a new goal or scenario in the background."""
+    register_default_tools(tool_registry)
+    run_manager = get_run_manager()
+    verifier = IndependentVerifier(db_path="env/company.db", artifacts_dir=ARTIFACTS_DIR)
+
+    task_str = task_body.get("task", "")
+    llm: Any = None
+
+    if scenario is not None:
+        sc_num = int(scenario) if str(scenario).isdigit() else scenario
+        sc_llm, sc_task, sc_faults = get_scenario_llm(sc_num)
+        task_str = task_str or sc_task
+        if sc_faults:
+            fault_manager.update_faults(sc_faults)
+        llm = sc_llm
+    else:
+        if os.getenv("GEMINI_API_KEY"):
+            try:
+                llm = get_llm_client()
+            except Exception:
+                sc_llm, _, _ = get_scenario_llm(1)
+                llm = sc_llm
+        else:
+            sc_llm, _, _ = get_scenario_llm(1)
+            llm = sc_llm
+
+    run_id = f"run_{uuid4().hex[:12]}"
+    executor = AgentExecutor(
+        llm_client=llm,
+        run_manager=run_manager,
+        registry=tool_registry,
+        reflector=Reflector(None),
+        verifier=verifier,
+        max_steps=30,
+    )
+    active_executors[run_id] = executor
+
+    async def _run_worker():
+        try:
+            await executor.run(task_str, run_id=run_id)
+        except Exception as e:
+            logger.error(f"Error in background agent run {run_id}: {e}")
+
+    task_obj = asyncio.create_task(_run_worker())
+    run_tasks[run_id] = task_obj
+
+    # Brief delay so run record is initialized in SQLite
+    await asyncio.sleep(0.1)
+
+    return {"ok": True, "run_id": run_id, "task": task_str}
+
+
+@router.post("/runs/{run_id}/resume")
+async def resume_run(run_id: str, body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    """Resume a paused run after human clarification."""
+    human_input = body.get("human_input", "")
+    executor = active_executors.get(run_id)
+    if not executor:
+        rm = get_run_manager()
+        sc_llm, _, _ = get_scenario_llm(3)
+        executor = AgentExecutor(
+            llm_client=sc_llm,
+            run_manager=rm,
+            registry=tool_registry,
+            reflector=Reflector(None),
+            verifier=IndependentVerifier(db_path="env/company.db", artifacts_dir=ARTIFACTS_DIR),
+        )
+        active_executors[run_id] = executor
+
+    async def _resume_worker():
+        try:
+            await executor.resume(run_id, human_input=human_input)
+        except Exception as e:
+            logger.error(f"Error resuming run {run_id}: {e}")
+
+    asyncio.create_task(_resume_worker())
+    await asyncio.sleep(0.1)
+
+    return {"ok": True, "resumed": run_id, "human_input": human_input}
+
+
+@router.post("/runs/{run_id}/approve")
+async def approve_run(run_id: str, body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    """Resume a paused approval run with approval decision."""
+    approved = bool(body.get("approved", True))
+    executor = active_executors.get(run_id)
+    if not executor:
+        rm = get_run_manager()
+        sc_llm, _, _ = get_scenario_llm(1)
+        executor = AgentExecutor(
+            llm_client=sc_llm,
+            run_manager=rm,
+            registry=tool_registry,
+            reflector=Reflector(None),
+            verifier=IndependentVerifier(db_path="env/company.db", artifacts_dir=ARTIFACTS_DIR),
+        )
+        active_executors[run_id] = executor
+
+    async def _approve_worker():
+        try:
+            await executor.resume(run_id, approval_granted=approved)
+        except Exception as e:
+            logger.error(f"Error in approval resume for {run_id}: {e}")
+
+    asyncio.create_task(_approve_worker())
+    await asyncio.sleep(0.1)
+
+    return {"ok": True, "run_id": run_id, "approved": approved}
+
+
+@router.get("/runs/{run_id}/evidence", response_class=PlainTextResponse)
+async def view_evidence(run_id: str) -> Response:
+    """Return raw evidence bundle markdown report."""
+    md_path = os.path.join(ARTIFACTS_DIR, "runs", run_id, "evidence_bundle.md")
+    if os.path.exists(md_path):
+        with open(md_path) as f:
+            return PlainTextResponse(f.read())
+    return PlainTextResponse(f"Evidence report not found for run {run_id}", status_code=404)

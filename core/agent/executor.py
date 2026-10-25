@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -52,6 +53,7 @@ class AgentExecutor:
         planner: Planner | None = None,
         reflector: Reflector | None = None,
         verifier: IndependentVerifier | None = None,
+        step_callback: Callable[[StepRecord], None] | None = None,
     ) -> None:
         self.llm = llm_client
         self.run_manager = run_manager or RunManager()
@@ -60,6 +62,7 @@ class AgentExecutor:
         self.max_steps = max_steps
         self.max_retries_per_intent = max_retries_per_intent
         self.max_verification_retries = max_verification_retries
+        self.step_callback = step_callback
 
         self.interpreter = interpreter or GoalInterpreter(self.llm)
         self.planner = planner or Planner(self.llm)
@@ -73,6 +76,14 @@ class AgentExecutor:
             self.verifier = IndependentVerifier(artifacts_dir=self.run_manager.artifacts_dir)
 
         self._company_context_cache: str | None = None
+
+    def _record_and_notify_step(self, run_id: str, step: StepRecord) -> None:
+        self.run_manager.record_step(run_id, step)
+        if self.step_callback:
+            try:
+                self.step_callback(step)
+            except Exception as e:
+                logger.warning(f"Error in step callback: {e}")
 
     def load_company_context(self) -> str:
         """Load company systems, procedures, and policies as contextual data."""
@@ -291,7 +302,7 @@ class AgentExecutor:
                         ok=True,
                         tokens=tokens_for_step,
                     )
-                    self.run_manager.record_step(run_id, finish_step)
+                    self._record_and_notify_step(run_id, finish_step)
                     self.run_manager.update_run(
                         run_id,
                         plan=plan.model_dump(),
@@ -328,7 +339,7 @@ class AgentExecutor:
                             error="; ".join(verif_res.discrepancies),
                             tokens=tokens_for_step,
                         )
-                        self.run_manager.record_step(run_id, repair_step)
+                        self._record_and_notify_step(run_id, repair_step)
                         working_memory["active_discrepancies"] = verif_res.discrepancies
                         self.run_manager.update_run(run_id, working_memory=working_memory)
                         run = _require_run(self.run_manager.get_run(run_id), run_id)
@@ -353,7 +364,7 @@ class AgentExecutor:
                             ok=False,
                             error="; ".join(verif_res.discrepancies),
                         )
-                        self.run_manager.record_step(run_id, fail_step)
+                        self._record_and_notify_step(run_id, fail_step)
                         self.run_manager.update_run(
                             run_id,
                             error=f"Verification failed: {verif_res.discrepancies}",
@@ -379,7 +390,7 @@ class AgentExecutor:
                     ok=True,
                     tokens=tokens_for_step,
                 )
-                self.run_manager.record_step(run_id, pause_step)
+                self._record_and_notify_step(run_id, pause_step)
                 self.run_manager.transition(run_id, RunStatus.WAITING_USER, reason=f"Awaiting user answer to: {question}")
                 return _require_run(self.run_manager.get_run(run_id), run_id)
 
@@ -400,7 +411,7 @@ class AgentExecutor:
                     ok=True,
                     tokens=tokens_for_step,
                 )
-                self.run_manager.record_step(run_id, pause_step)
+                self._record_and_notify_step(run_id, pause_step)
                 self.run_manager.transition(run_id, RunStatus.WAITING_APPROVAL, reason=f"Awaiting approval for: {action_desc}")
                 return _require_run(self.run_manager.get_run(run_id), run_id)
 
@@ -496,7 +507,7 @@ class AgentExecutor:
                 duration_ms=duration_ms,
                 tokens=tokens_for_step,
             )
-            self.run_manager.record_step(run_id, step_record)
+            self._record_and_notify_step(run_id, step_record)
 
             # Update Run State
             self.run_manager.update_run(

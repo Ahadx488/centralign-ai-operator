@@ -70,3 +70,27 @@ This document captures key technical design decisions made in CentrAlign AI, exp
 - **Rationale:**
   1. Decoupled from proprietary SDK updates.
   2. 100% reproducible test suites with simulated transient faults and tool calls.
+
+---
+
+## ADR 007: Single-Process Multi-System Mock Architecture
+
+- **Status:** Accepted
+- **Context:** Running five independent mock applications (ERP, Portal, Mailbox, Files, Tickets) across separate TCP ports produces zombie processes, port collisions, and fragile test fixtures.
+- **Decision:** Mount all five mock systems under a single FastAPI application using distinct path prefixes (`/portal`, `/erp`, `/mail`, `/files`, `/tickets`, `/__truth`, `/ui`) served by a single Uvicorn server on port 8001.
+- **Rationale:**
+  1. Zero zombie processes or port contention during local tests and eval suites.
+  2. Independent session cookies and isolated CSS/templates preserve genuine multi-system behavior for Playwright.
+  3. Single-command setup and instant startup.
+
+---
+
+## ADR 008: Server-Rendered HTMX + Jinja2 Dashboard over Heavy SPA Frameworks
+
+- **Status:** Accepted
+- **Context:** The agent operator requires a live timeline, task launcher, and clarification/approval interface.
+- **Decision:** Use FastAPI + Jinja2 + HTMX for the Web Dashboard (`/ui`), avoiding React/Node/Webpack build tooling.
+- **Rationale:**
+  1. Instant startup with zero npm/node installation dependencies.
+  2. Real-time reactive updates via HTMX polling (`hx-get="/ui/runs/{id}/live" hx-trigger="every 1s"`) with vanilla JS fallback.
+  3. Human-in-the-loop clarification and approval actions execute with direct server-rendered interactions.
