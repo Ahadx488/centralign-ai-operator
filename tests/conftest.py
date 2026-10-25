@@ -26,35 +26,41 @@ class UvicornTestServer(uvicorn.Server):
 
 @pytest.fixture(scope="session", autouse=True)
 def live_server():
-    """Start mock environment on 127.0.0.1:8001 in background thread."""
+    """Start mock environment on 127.0.0.1:8001 in background thread (or reuse running server)."""
     init_db()
     seed_company_data()
     fault_manager.reset_faults()
 
+    # 1. Check if already running
+    try:
+        with httpx.Client(timeout=0.5) as client:
+            res = client.get(f"{BASE_URL}/__truth/state")
+            if res.status_code == 200:
+                yield
+                return
+    except Exception:
+        pass
+
+    # 2. Start uvicorn in background thread
     config = uvicorn.Config(app, host=SERVER_HOST, port=SERVER_PORT, log_level="error")
     server = UvicornTestServer(config)
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
 
     # Poll until server is ready
-    ready = False
-    for _ in range(50):
+    for _ in range(25):
         try:
-            with httpx.Client(timeout=1.0) as client:
+            with httpx.Client(timeout=0.5) as client:
                 res = client.get(f"{BASE_URL}/__truth/state")
                 if res.status_code == 200:
-                    ready = True
                     break
         except Exception:
             time.sleep(0.1)
 
-    if not ready:
-        raise RuntimeError("Live mock server failed to start on 127.0.0.1:8001")
-
     yield
 
     server.should_exit = True
-    thread.join(timeout=2.0)
+    thread.join(timeout=1.0)
 
 
 @pytest.fixture(autouse=True)

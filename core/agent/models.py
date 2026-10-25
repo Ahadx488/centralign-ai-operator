@@ -94,7 +94,7 @@ class Reflection(BaseModel):
 
 class AgentAction(BaseModel):
     """Action decision produced by the executor LLM."""
-    thought: str = Field(description="Chain-of-thought rationale for this step.")
+    thought: str = Field(default="", description="Chain-of-thought rationale for this step.")
     tool: str | None = Field(default=None, description="Name of tool to execute, or None if finishing.")
     args: dict[str, Any] = Field(default_factory=dict, description="Keyword arguments for the tool.")
     is_finish: bool = Field(default=False, description="True if the goal is fully accomplished.")

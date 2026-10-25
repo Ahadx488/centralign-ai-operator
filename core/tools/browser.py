@@ -104,7 +104,7 @@ class BrowserManager:
         page = await self.get_page()
         await self.settle()
 
-        js_distiller = """
+        js_distiller = r"""
         () => {
             const elements = [];
             let counter = 1;
@@ -133,8 +133,11 @@ class BrowserManager:
                 }
 
                 let text = '';
-                if (['button', 'a', 'h1', 'h2', 'h3'].includes(node.tagName.toLowerCase()) || node.getAttribute('role') === 'alert' || node.classList.contains('alert')) {
+                if (['button', 'a', 'h1', 'h2', 'h3', 'p'].includes(node.tagName.toLowerCase()) || node.getAttribute('role') === 'alert' || node.classList.contains('alert')) {
                     text = node.innerText ? node.innerText.trim() : '';
+                } else if (node.tagName.toLowerCase() === 'table') {
+                    const tText = node.innerText ? node.innerText.trim().replace(/\s+/g, ' ') : '';
+                    text = tText.length > 500 ? tText.slice(0, 500) + '...' : tText;
                 }
 
                 let value = null;
@@ -218,16 +221,17 @@ class BrowserManager:
         if await ref_loc.count() > 0:
             return ref_loc
 
-        # 3. Try matching visible text / label / name in ref_map
+        # 3. Try matching visible text / label / name in ref_map (prioritize interactive elements)
         space_target = target.lower().replace("_", " ")
         for ref_id, info in self.ref_map.items():
-            if (
-                (info.text and target.lower() in info.text.lower())
-                or (info.label and target.lower() in info.label.lower())
-                or (info.label and space_target in info.label.lower())
-                or (info.name and target.lower() == info.name.lower())
-            ):
-                return page.locator(info.selector)
+            if info.tag in ("button", "a", "input", "select", "textarea"):
+                if (
+                    (info.text and target.lower() in info.text.lower())
+                    or (info.label and target.lower() in info.label.lower())
+                    or (info.label and space_target in info.label.lower())
+                    or (info.name and target.lower() == info.name.lower())
+                ):
+                    return page.locator(info.selector)
 
         # 4. Try input/textarea/select by name or id attribute
         try:

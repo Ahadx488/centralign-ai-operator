@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from core.agent.context import EXECUTOR_SYSTEM_PROMPT, ContextManager
 from core.agent.interpreter import GoalInterpreter
@@ -17,6 +18,10 @@ from core.llm.models import LLMMessage
 from core.runs.manager import RunManager
 from core.runs.models import RunRecord, RunStatus, StepRecord
 from core.tools.registry import ToolRegistry, tool_registry
+from core.verify.models import VerificationOutcome
+
+if TYPE_CHECKING:
+    from core.verify.verifier import IndependentVerifier
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +36,7 @@ class AgentExecutor:
     """
     CentrAlign Core Agent Loop.
     Coordinates GoalInterpreter, Living Planner, Tool Execution,
-    Reflector, Context Management, and SQLite Run State Machine.
+    Reflector, Context Management, SQLite Run State Machine, and Independent Verifier.
     """
 
     def __init__(
@@ -42,9 +47,11 @@ class AgentExecutor:
         company_dir: Path | str = "company",
         max_steps: int = 30,
         max_retries_per_intent: int = 3,
+        max_verification_retries: int = 2,
         interpreter: GoalInterpreter | None = None,
         planner: Planner | None = None,
         reflector: Reflector | None = None,
+        verifier: IndependentVerifier | None = None,
     ) -> None:
         self.llm = llm_client
         self.run_manager = run_manager or RunManager()
@@ -52,11 +59,18 @@ class AgentExecutor:
         self.company_dir = Path(company_dir)
         self.max_steps = max_steps
         self.max_retries_per_intent = max_retries_per_intent
+        self.max_verification_retries = max_verification_retries
 
         self.interpreter = interpreter or GoalInterpreter(self.llm)
         self.planner = planner or Planner(self.llm)
         self.reflector = reflector or Reflector(self.llm)
         self.context_manager = ContextManager(self.run_manager)
+        if verifier is not None:
+            self.verifier = verifier
+        else:
+            from core.verify.verifier import IndependentVerifier
+
+            self.verifier = IndependentVerifier(artifacts_dir=self.run_manager.artifacts_dir)
 
         self._company_context_cache: str | None = None
 
@@ -154,6 +168,20 @@ class AgentExecutor:
 
         raise ValueError(f"Run {run_id} is in status {run.status.value}, cannot resume.")
 
+    async def _recover_auth(self, run_id: str, system: str = "erp") -> None:
+        """Re-authenticate using stored credentials from company systems vault."""
+        logger.info(f"[Auth Recovery] Re-authenticating session for system '{system}'")
+        if system == "portal":
+            await self.tools.execute("browser_open_url", {"url": "http://127.0.0.1:8001/portal/login"})
+            await self.tools.execute("browser_type_text", {"target": "#email", "text": "supplier@acme.com"})
+            await self.tools.execute("browser_type_text", {"target": "#password", "text": "portal_pass123"})
+            await self.tools.execute("browser_click", {"target": "#portal-submit-btn"})
+        else:
+            await self.tools.execute("browser_open_url", {"url": "http://127.0.0.1:8001/erp/login"})
+            await self.tools.execute("browser_type_text", {"target": "#username", "text": "admin"})
+            await self.tools.execute("browser_type_text", {"target": "#password", "text": "erp_pass123"})
+            await self.tools.execute("browser_click", {"target": "#erp-submit-btn"})
+
     async def _execute_loop(
         self,
         run_id: str,
@@ -173,7 +201,7 @@ class AgentExecutor:
             steps = self.run_manager.get_steps(run_id)
             step_index = len(steps) + 1
 
-            # 1. Build prompt context
+            # 1. Build prompt context (including any active verification discrepancies to repair)
             context_prompt = self.context_manager.build_prompt_context(
                 goal=goal,
                 plan=plan,
@@ -181,6 +209,15 @@ class AgentExecutor:
                 steps=steps,
                 company_context=company_context,
             )
+
+            # If active verification discrepancies exist, add prominent repair instructions
+            active_discrepancies = working_memory.get("active_discrepancies")
+            if active_discrepancies:
+                context_prompt += (
+                    f"\n\n🚨 ATTENTION — VERIFICATION FAILED PREVIOUSLY:\n"
+                    f"The independent verifier detected discrepancies: {active_discrepancies}.\n"
+                    f"You MUST take corrective action to resolve these before attempting to finish."
+                )
 
             # 2. Query LLM for next action
             messages = [
@@ -191,7 +228,6 @@ class AgentExecutor:
             action: AgentAction
             tokens_for_step = 0
             try:
-                # Use tool definitions if available, plus structured response model
                 response = await self.llm.generate_async(
                     messages=messages,
                     tools=self.tools.export_definitions(),
@@ -200,7 +236,6 @@ class AgentExecutor:
                 )
                 tokens_for_step = response.usage.total_tokens
 
-                # If the LLM invoked a tool via native tool calling:
                 if response.tool_calls:
                     tc = response.tool_calls[0]
                     action = AgentAction(
@@ -225,29 +260,106 @@ class AgentExecutor:
                 f"Action: {action.tool} | Finish: {action.is_finish}"
             )
 
-            # 3. Check for Task Completion
+            # 3. Check for Task Completion & Trigger Independent Verifier
             if action.is_finish or (plan.is_completed and action.tool is None):
                 self.run_manager.transition(run_id, RunStatus.VERIFYING, reason="Action indicated finish, verifying")
-                # Transition to COMPLETED
-                self.run_manager.transition(run_id, RunStatus.COMPLETED, reason="Task successfully accomplished")
-                finish_step = StepRecord(
-                    run_id=run_id,
-                    step_index=step_index,
-                    intent_id=plan.current_intent.id if plan.current_intent else None,
-                    thought=action.thought,
-                    tool_name="finish",
-                    tool_args={"summary": action.finish_summary},
-                    observation_summary=action.finish_summary or "Task finished successfully.",
-                    ok=True,
-                    tokens=tokens_for_step,
-                )
-                self.run_manager.record_step(run_id, finish_step)
-                self.run_manager.update_run(
-                    run_id,
-                    plan=plan.model_dump(),
+
+                # Execute Independent Verification
+                verif_res = await self.verifier.verify(
+                    run=run,
+                    goal=goal,
                     working_memory=working_memory,
+                    steps=steps,
                 )
-                return _require_run(self.run_manager.get_run(run_id), run_id)
+                working_memory["verification_outcome"] = verif_res.outcome.value
+                working_memory["verification_discrepancies"] = verif_res.discrepancies
+
+                if verif_res.outcome == VerificationOutcome.PASS:
+                    self.run_manager.transition(
+                        run_id,
+                        RunStatus.COMPLETED,
+                        reason="Independent verification PASSED with full evidence",
+                    )
+                    finish_step = StepRecord(
+                        run_id=run_id,
+                        step_index=step_index,
+                        intent_id=plan.current_intent.id if plan.current_intent else None,
+                        thought=action.thought,
+                        tool_name="finish",
+                        tool_args={"summary": action.finish_summary},
+                        observation_summary=action.finish_summary or "Task verified and completed successfully.",
+                        ok=True,
+                        tokens=tokens_for_step,
+                    )
+                    self.run_manager.record_step(run_id, finish_step)
+                    self.run_manager.update_run(
+                        run_id,
+                        plan=plan.model_dump(),
+                        working_memory=working_memory,
+                    )
+                    return _require_run(self.run_manager.get_run(run_id), run_id)
+                else:
+                    # Verification failed: Check bounded retry cap
+                    v_attempts = working_memory.get("verification_attempts", 0) + 1
+                    working_memory["verification_attempts"] = v_attempts
+
+                    if v_attempts <= self.max_verification_retries:
+                        logger.warning(
+                            f"Verification failed on attempt {v_attempts}/{self.max_verification_retries}: "
+                            f"{verif_res.discrepancies}. Injected into observations for self-correction."
+                        )
+                        self.run_manager.transition(
+                            run_id,
+                            RunStatus.RUNNING,
+                            reason=f"Verification failed (attempt {v_attempts}): {verif_res.discrepancies}. Retrying correction.",
+                        )
+                        repair_step = StepRecord(
+                            run_id=run_id,
+                            step_index=step_index,
+                            intent_id=plan.current_intent.id if plan.current_intent else None,
+                            thought=action.thought,
+                            tool_name="verify",
+                            tool_args={},
+                            observation_summary=(
+                                f"VERIFICATION FAILED: {'; '.join(verif_res.discrepancies)}. "
+                                f"Please fix these discrepancies before finishing."
+                            ),
+                            ok=False,
+                            error="; ".join(verif_res.discrepancies),
+                            tokens=tokens_for_step,
+                        )
+                        self.run_manager.record_step(run_id, repair_step)
+                        working_memory["active_discrepancies"] = verif_res.discrepancies
+                        self.run_manager.update_run(run_id, working_memory=working_memory)
+                        run = _require_run(self.run_manager.get_run(run_id), run_id)
+                        continue
+                    else:
+                        logger.error(
+                            f"Verification failed after {v_attempts} attempts: {verif_res.discrepancies}. Transitioning to FAILED."
+                        )
+                        self.run_manager.transition(
+                            run_id,
+                            RunStatus.FAILED,
+                            reason=f"Independent verifier rejected task completion due to discrepancies: {verif_res.discrepancies}",
+                        )
+                        fail_step = StepRecord(
+                            run_id=run_id,
+                            step_index=step_index,
+                            intent_id=plan.current_intent.id if plan.current_intent else None,
+                            thought=action.thought,
+                            tool_name="verify",
+                            tool_args={},
+                            observation_summary=f"VERIFICATION REJECTED: {'; '.join(verif_res.discrepancies)}",
+                            ok=False,
+                            error="; ".join(verif_res.discrepancies),
+                        )
+                        self.run_manager.record_step(run_id, fail_step)
+                        self.run_manager.update_run(
+                            run_id,
+                            error=f"Verification failed: {verif_res.discrepancies}",
+                            working_memory=working_memory,
+                        )
+                        return _require_run(self.run_manager.get_run(run_id), run_id)
 
             # 4. Handle Human Tools Pause
             if action.tool == "ask_user":
@@ -292,10 +404,17 @@ class AgentExecutor:
                 self.run_manager.transition(run_id, RunStatus.WAITING_APPROVAL, reason=f"Awaiting approval for: {action_desc}")
                 return _require_run(self.run_manager.get_run(run_id), run_id)
 
-            # 5. Execute Tool
+            # 5. Execute Tool with Transient 500 Backoff Retry
             tool_name = action.tool or "snapshot"
             start_t = time.monotonic()
             tool_res = await self.tools.execute(tool_name, action.args)
+
+            # Fault recovery: Transient 500 retry
+            if not tool_res.ok and ("500" in str(tool_res.error) or "Internal Server Error" in str(tool_res.error)):
+                logger.warning(f"Transient error encountered on tool '{tool_name}'. Retrying with backoff...")
+                await asyncio.sleep(1.0)
+                tool_res = await self.tools.execute(tool_name, action.args)
+
             duration_ms = (time.monotonic() - start_t) * 1000.0
 
             # 6. Normalize Observation & Offload Artifacts
@@ -334,11 +453,19 @@ class AgentExecutor:
             if reflection.facts_learned:
                 working_memory.update(reflection.facts_learned)
 
+            # Fault recovery: Session Expiry Mid-Task
+            if reflection.facts_learned.get("session_expired"):
+                logger.warning(f"Handling detected session expiry at step {step_index}")
+                target_sys = "portal" if "/portal" in obs_summary else "erp"
+                await self._recover_auth(run_id, system=target_sys)
+                working_memory.pop("session_expired", None)
+                working_memory.pop("auth_required", None)
+
             # Advance plan or trigger re-plan
             if reflection.intent_completed:
                 logger.info(f"Intent {plan.current_intent.id if plan.current_intent else ''} completed!")
                 plan.advance()
-            elif reflection.observation_type.value in {"error", "no_op"}:
+            elif reflection.observation_type.value in {"error", "no_op"} or reflection.needs_replan:
                 curr = plan.current_intent
                 if curr:
                     curr.retries += 1

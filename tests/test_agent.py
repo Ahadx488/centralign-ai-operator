@@ -22,6 +22,25 @@ from core.llm.models import LLMResponse, TokenUsage
 from core.runs.manager import RunManager
 from core.runs.models import RunStatus, StepRecord
 from core.tools.registry import BaseTool, RiskTier, ToolRegistry, ToolResult
+from core.verify.models import EvidenceBundle, VerificationOutcome, VerificationResult
+from core.verify.verifier import IndependentVerifier
+
+
+class MockVerifier(IndependentVerifier):
+    async def verify(self, run, goal, working_memory, steps, **kwargs):
+        bundle = EvidenceBundle(
+            run_id=run.run_id,
+            task=run.task,
+            outcome=VerificationOutcome.PASS,
+            checks=[],
+            discrepancies=[],
+        )
+        return VerificationResult(
+            outcome=VerificationOutcome.PASS,
+            checks=[],
+            discrepancies=[],
+            evidence_bundle=bundle,
+        )
 
 
 class DummyArgs(BaseModel):
@@ -283,6 +302,7 @@ async def test_executor_human_ask_user_pause_and_resume(
         run_manager=run_manager,
         registry=tool_registry,
         reflector=Reflector(None),
+        verifier=MockVerifier(),
     )
 
     # 1. Goal Interpreter response
@@ -346,6 +366,7 @@ async def test_executor_approval_pause_and_resume(
         run_manager=run_manager,
         registry=tool_registry,
         reflector=Reflector(None),
+        verifier=MockVerifier(),
     )
 
     fake_llm.queue_response(LLMResponse(parsed=Goal(outcome="Large payment", is_blocking=False), provider="fake"))
@@ -393,6 +414,7 @@ async def test_executor_loop_detection_triggers_replan(
         run_manager=run_manager,
         registry=tool_registry,
         reflector=Reflector(None),
+        verifier=MockVerifier(),
         max_steps=10,
     )
 

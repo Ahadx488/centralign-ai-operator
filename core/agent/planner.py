@@ -34,7 +34,10 @@ Rules for Re-planning:
 
 
 class InitialPlanOutput(BaseModel):
-    intents: list[Intent] = Field(description="Sequential list of high-level milestone intents.")
+    intents: list[Intent] = Field(
+        default_factory=list,
+        description="Sequential list of high-level milestone intents.",
+    )
 
 
 class Planner:

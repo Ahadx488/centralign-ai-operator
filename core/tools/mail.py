@@ -64,7 +64,8 @@ class ReadMailTool(BaseTool):
 
 
 class SaveAttachmentArgs(BaseModel):
-    email_id: int = Field(description="ID of the email with the attachment to download")
+    email_id: int | None = Field(default=None, description="ID of the email with the attachment to download")
+    filename: str | None = Field(default=None, description="Filename of attachment to download")
     save_dir: str | None = Field(default=None, description="Directory to save attachment (default: artifacts/downloads)")
 
 
@@ -75,16 +76,28 @@ class SaveAttachmentTool(BaseTool):
     risk_tier = RiskTier.READ
 
     async def _run(self, **kwargs: Any) -> ToolResult:
-        email_id: int = kwargs["email_id"]
+        email_id: int | None = kwargs.get("email_id")
+        filename_arg: str | None = kwargs.get("filename")
         save_dir: str | None = kwargs.get("save_dir")
 
-        email = query_one("SELECT * FROM emails WHERE id = ?", (email_id,))
-        if not email:
-            return ToolResult.failure(f"Email with ID {email_id} not found.")
+        email: dict[str, Any] | None = None
+        if email_id is not None:
+            email = query_one("SELECT * FROM emails WHERE id = ?", (email_id,))
+        elif filename_arg:
+            email = query_one(
+                "SELECT * FROM emails WHERE attachment_filename = ? OR body LIKE ? ORDER BY id DESC LIMIT 1",
+                (filename_arg, f"%{filename_arg}%"),
+            )
+        else:
+            return ToolResult.failure("Must provide either email_id or filename to download attachment.")
 
-        filename = email.get("attachment_filename")
+        if not email:
+            ref = email_id if email_id is not None else filename_arg
+            return ToolResult.failure(f"Email matching '{ref}' not found.")
+
+        filename = email.get("attachment_filename") or filename_arg
         if not filename:
-            return ToolResult.failure(f"Email #{email_id} has no attachment.")
+            return ToolResult.failure(f"Email #{email.get('id')} has no attachment.")
 
         source_path = os.path.join(INVOICES_DIR, filename)
         if not os.path.exists(source_path):
