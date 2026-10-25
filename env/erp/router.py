@@ -22,7 +22,9 @@ def get_current_erp_user(request: Request) -> str | None:
 
 @router.get("/login")
 async def erp_login_page(request: Request, expired: int = 0) -> Response:
-    error = "Your ERP session has expired due to inactivity. Please sign in again." if expired else None
+    error = (
+        "Your ERP session has expired due to inactivity. Please sign in again." if expired else None
+    )
     return templates.TemplateResponse(
         request=request,
         name="erp/login.html",

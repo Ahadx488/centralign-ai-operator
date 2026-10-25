@@ -31,9 +31,8 @@ test-results/
 playwright-report/
 blob-report/
 playwright/.cache/
-artifacts/screenshots/
-artifacts/downloads/
-artifacts/temp/
+artifacts/**
+!artifacts/.gitkeep
 
 # Generated Seed Files
 env/fileshare/data/invoices/*.pdf

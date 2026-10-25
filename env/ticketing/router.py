@@ -150,7 +150,14 @@ async def tickets_new_submit(
         INSERT INTO tickets (ticket_number, title, description, assignee, status, priority, created_at)
         VALUES (?, ?, ?, ?, 'open', ?, ?)
         """,
-        (ticket_num, title.strip(), description.strip(), assignee.strip(), priority.strip(), created_at),
+        (
+            ticket_num,
+            title.strip(),
+            description.strip(),
+            assignee.strip(),
+            priority.strip(),
+            created_at,
+        ),
     )
 
     return RedirectResponse(url="/tickets/list", status_code=303)
