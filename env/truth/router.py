@@ -61,9 +61,9 @@ async def update_active_faults(updates: dict[str, Any] = Body(...)) -> dict[str,
 
 @router.post("/faults/reset")
 async def reset_active_faults() -> dict[str, Any]:
-    """Resets all faults to default benign state."""
-    res = fault_manager.reset_faults()
-    return {"status": "faults_cleared", "faults": res}
+    """Resets all runtime faults to default neutral state."""
+    reset = fault_manager.reset_faults()
+    return {"status": "reset", "faults": reset}
 
 
 @router.get("/bills")

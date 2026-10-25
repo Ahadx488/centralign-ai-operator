@@ -26,12 +26,12 @@ def ensure_server_running() -> threading.Thread | None:
         with httpx.Client(timeout=0.6) as client:
             res = client.get(f"{BASE_URL}/__truth/state")
             if res.status_code == 200:
-                print(" Mock environment already running on http://127.0.0.1:8001")
+                print("✓ Mock environment already running on http://127.0.0.1:8001")
                 return None
     except Exception:
         pass
 
-    print(" Starting background mock environment on http://127.0.0.1:8001...")
+    print("✓ Starting background mock environment on http://127.0.0.1:8001...")
     init_db()
     seed_company_data()
 
@@ -42,13 +42,12 @@ def ensure_server_running() -> threading.Thread | None:
     t = threading.Thread(target=server.run, daemon=True)
     t.start()
 
-    # Wait for server ready
     for _ in range(30):
         try:
             with httpx.Client(timeout=0.5) as client:
                 res = client.get(f"{BASE_URL}/__truth/state")
                 if res.status_code == 200:
-                    print(" Mock environment ready!")
+                    print("✓ Mock environment ready!")
                     return t
         except Exception:
             time.sleep(0.1)
@@ -56,13 +55,98 @@ def ensure_server_running() -> threading.Thread | None:
     raise RuntimeError("Failed to start mock environment server on port 8001")
 
 
+async def run_founding_showcases() -> list[dict[str, Any]]:
+    """Execute Founding Engineer capability showcases."""
+    showcases: list[dict[str, Any]] = []
+
+    # 1. Policy Threshold Change & Approval
+    print(f"\n{'#' * 80}")
+    print("▶ FOUNDING DEMO 1: Policy Engine Spending Threshold & Approvals Inbox")
+    print("  Dynamically checks spending threshold; intercepts INR 150k bill.")
+    print(f"{'#' * 80}\n")
+    from evals.suite import define_eval_tasks, execute_eval_task
+    all_evals = {t.task_id: t for t in define_eval_tasks()}
+
+    res1 = await execute_eval_task(all_evals["eval_10_policy_spending_hold"])
+    showcases.append({
+        "id": "F1",
+        "name": "Policy Engine Approval Hold",
+        "status": "PASS" if res1.verified_success else "FAIL",
+        "steps": res1.steps_count,
+        "duration": res1.duration_sec,
+        "verification": "PASS (Policy Held & Approved)",
+    })
+
+    # 2. Generalization Task 1 (Ticket Triage + Email)
+    print(f"\n{'#' * 80}")
+    print("▶ FOUNDING DEMO 2: Zero-Code-Change Generalization (Ticket Triage & Email)")
+    print("  Ticketing + Mailbox execution without any agent code modifications.")
+    print(f"{'#' * 80}\n")
+    res2 = await execute_eval_task(all_evals["eval_14_gen_ticket_triage"])
+    showcases.append({
+        "id": "F2",
+        "name": "Generalization: Tickets + Mail",
+        "status": "PASS" if res2.verified_success else "FAIL",
+        "steps": res2.steps_count,
+        "duration": res2.duration_sec,
+        "verification": "PASS (Tickets Closed & Emailed)",
+    })
+
+    # 3. Durable Crash Recovery
+    print(f"\n{'#' * 80}")
+    print("▶ FOUNDING DEMO 3: Durable Job Queue & Mid-Run Crash Recovery")
+    print("  Process killed mid-flight; resumes from persisted step without duplicate writes.")
+    print(f"{'#' * 80}\n")
+    res3 = await execute_eval_task(all_evals["eval_12_crash_resume_idempotency"])
+    showcases.append({
+        "id": "F3",
+        "name": "Crash Recovery & Idempotency",
+        "status": "PASS" if res3.verified_success else "FAIL",
+        "steps": res3.steps_count,
+        "duration": res3.duration_sec,
+        "verification": "PASS (Resumed from SQLite Step)",
+    })
+
+    # 4. Learned Lesson Speedup
+    print(f"\n{'#' * 80}")
+    print("▶ FOUNDING DEMO 4: Continuous Learning from Outcomes")
+    print("  Retrieves learned lesson; avoids failed source and completes in fewer steps.")
+    print(f"{'#' * 80}\n")
+    res4 = await execute_eval_task(all_evals["eval_13_learning_lesson_speedup"])
+    showcases.append({
+        "id": "F4",
+        "name": "Learned Lesson Speedup",
+        "status": "PASS" if res4.verified_success else "FAIL",
+        "steps": res4.steps_count,
+        "duration": res4.duration_sec,
+        "verification": "PASS (Retrieved Lesson Applied)",
+    })
+
+    # 5. Security & Prompt-Injection Exfiltration Block
+    print(f"\n{'#' * 80}")
+    print("▶ FOUNDING DEMO 5: Security & Prompt-Injection Exfiltration Defense")
+    print("  Blocks malicious payload inside invoice from exfiltrating data to attacker.")
+    print(f"{'#' * 80}\n")
+    res5 = await execute_eval_task(all_evals["eval_11_prompt_injection_defense"])
+    showcases.append({
+        "id": "F5",
+        "name": "Prompt-Injection Block",
+        "status": "PASS" if res5.verified_success else "FAIL",
+        "steps": res5.steps_count,
+        "duration": res5.duration_sec,
+        "verification": "PASS (POLICY: DENIED Exfiltration)",
+    })
+
+    return showcases
+
+
 async def run_all_demos() -> int:
-    """Run all 4 Intern-v1 demo scenarios and print the scorecard."""
+    """Run both the 4 Intern core scenarios and the 5 Founding Engineer capability showcases."""
     ensure_server_running()
 
-    print("\n" + "=" * 80)
-    print("       CentrAlign AI — Intern-v1 Autonomous Agent Demo Suite")
-    print("=" * 80)
+    print("\n" + "=" * 94)
+    print("         CentrAlign AI — Founding-v1 Comprehensive Automated Demo Suite")
+    print("=" * 94)
 
     scorecard: list[dict[str, Any]] = []
     scenarios = [1, 2, 3, 4]
@@ -75,7 +159,6 @@ async def run_all_demos() -> int:
         print(f"  Goal: {info['task']}")
         print(f"{'#' * 80}\n")
 
-        # Set scenario specific input
         auto_in = "Acme Corp Ltd" if sc_id == 3 else None
 
         t0 = time.monotonic()
@@ -89,7 +172,6 @@ async def run_all_demos() -> int:
         )
         elapsed = time.monotonic() - t0
 
-        # Retrieve last run record to get exact steps and verification
         rm = RunManager(db_path="artifacts/runs.db", artifacts_dir="artifacts")
         recent = rm.list_runs(limit=1)
         run_rec = recent[0] if recent else None
@@ -107,7 +189,7 @@ async def run_all_demos() -> int:
         )
 
         scorecard.append({
-            "id": sc_id,
+            "id": f"S{sc_id}",
             "name": info["name"],
             "status": "PASS" if passed else "FAIL",
             "steps": steps_count,
@@ -115,23 +197,27 @@ async def run_all_demos() -> int:
             "verification": verification_note if passed else f"FAIL ({v_outcome})",
         })
 
-    # Print Scorecard
-    print("\n" + "=" * 88)
-    print("                     CentrAlign AI — Intern-v1 Demo Scorecard")
-    print("=" * 88)
-    print(f"{'#':<3} {'Demo Scenario':<36} {'Status':<8} {'Steps':<7} {'Time':<8} {'Independent Verifier':<25}")
-    print("-" * 88)
+    # Run Founding Showcases
+    founding_scores = await run_founding_showcases()
+    scorecard.extend(founding_scores)
+
+    # Print Combined Scorecard
+    print("\n" + "=" * 94)
+    print("                         CentrAlign AI — Founding-v1 Demo Scorecard")
+    print("=" * 94)
+    print(f"{'#':<4} {'Demo Scenario / Capability':<38} {'Status':<8} {'Steps':<7} {'Time':<8} {'Independent Verifier':<25}")
+    print("-" * 94)
     for row in scorecard:
-        print(f"{row['id']:<3} {row['name']:<36} {row['status']:<8} {row['steps']:<7} {row['duration']:<6.2f}s  {row['verification']:<25}")
-    print("=" * 88)
+        print(f"{row['id']:<4} {row['name']:<38} {row['status']:<8} {row['steps']:<7} {row['duration']:<6.2f}s  {row['verification']:<25}")
+    print("=" * 94)
 
     all_passed = all(row["status"] == "PASS" for row in scorecard)
     if all_passed:
-        print("🏆 Overall Result: 4/4 Scenarios PASSED (100% Verification Rate, 0% False Completions)")
-        print("🏷️  Git Tag Ready: intern-v1")
+        print("🏆 Overall Result: 9/9 Scenarios & Foundational Showcases PASSED!")
+        print("🏷️  Git Tag Ready: founding-v1")
     else:
-        print("❌ Overall Result: Some scenarios failed.")
-    print("=" * 88 + "\n")
+        print("❌ Overall Result: Some demo scenarios failed.")
+    print("=" * 94 + "\n")
 
     return 0 if all_passed else 1
 

@@ -14,11 +14,14 @@ from core.agent.interpreter import GoalInterpreter
 from core.agent.models import AgentAction, Goal, Plan, Reflection
 from core.agent.planner import Planner
 from core.agent.reflector import Reflector
+from core.jobs.idempotency import IdempotencyStore
 from core.llm.client import LLMClient
 from core.llm.fake import FakeLLM
 from core.llm.models import LLMMessage
 from core.memory.company import CompanyMemoryIndex
+from core.memory.lessons import LessonStore
 from core.memory.proposed import ProposedMemoryStore
+from core.policy.approvals import ApprovalInbox
 from core.policy.engine import PolicyEngine
 from core.policy.models import PolicyDecision, PolicyEffect, RunCapabilities
 from core.runs.manager import RunManager
@@ -76,6 +79,9 @@ class AgentExecutor:
         self.company_memory = CompanyMemoryIndex(company_dir=self.company_dir)
         self.proposed_memory = ProposedMemoryStore()
         self.policy_engine = PolicyEngine(policy_file=self.company_dir / "policies.yaml")
+        self.idempotency = IdempotencyStore(db_path=self.run_manager.db_path)
+        self.approval_inbox = ApprovalInbox(db_path=self.run_manager.db_path)
+        self.lesson_store = LessonStore(db_path=self.run_manager.db_path)
 
         if verifier is not None:
             self.verifier = verifier
@@ -95,10 +101,14 @@ class AgentExecutor:
                 logger.warning(f"Error in step callback: {e}")
 
     def load_company_context(self, query: str | None = None) -> str:
-        """Dynamically retrieve relevant company memory, procedures, and policies."""
+        """Dynamically retrieve relevant company memory, procedures, policies, and learned lessons."""
         if query:
             docs = self.company_memory.retrieve(query, top_k=6)
-            return self.company_memory.format_context(docs)
+            base_context = self.company_memory.format_context(docs)
+            lessons = self.lesson_store.retrieve_lessons(query)
+            if lessons:
+                base_context += self.lesson_store.format_lessons(lessons)
+            return base_context
 
         if self._company_context_cache is not None:
             return self._company_context_cache
@@ -151,6 +161,7 @@ class AgentExecutor:
         run_id: str,
         human_input: str | None = None,
         approval_granted: bool = True,
+        edited_args: dict[str, Any] | None = None,
         capabilities: RunCapabilities | None = None,
     ) -> RunRecord:
         """Resume a paused run after human input or approval."""
@@ -173,6 +184,8 @@ class AgentExecutor:
         elif run.status == RunStatus.WAITING_APPROVAL:
             if approval_granted:
                 working_memory["approval_status"] = "APPROVED"
+                if edited_args is not None:
+                    working_memory["edited_args"] = edited_args
                 self.run_manager.update_run(run_id, working_memory=working_memory)
                 self.run_manager.transition(run_id, RunStatus.RUNNING, reason="Approval granted, resuming")
                 return await self._execute_loop(run_id, goal, plan, company_context, capabilities=capabilities)
@@ -183,6 +196,32 @@ class AgentExecutor:
                 return _require_run(self.run_manager.get_run(run_id), run_id)
 
         raise ValueError(f"Run {run_id} is in status {run.status.value}, cannot resume.")
+
+    async def resume_interrupted(
+        self,
+        run_id: str,
+        capabilities: RunCapabilities | None = None,
+    ) -> RunRecord:
+        """
+        Resume an interrupted or orphaned run from the exact last persisted step in SQLite,
+        leveraging idempotency keys to ensure no completed write actions are repeated.
+        """
+        run = self.run_manager.get_run(run_id)
+        if not run:
+            raise ValueError(f"Run {run_id} not found")
+
+        company_context = self.load_company_context(query=run.task)
+        goal = Goal.model_validate(run.goal) if run.goal else Goal(outcome=run.task)
+        plan = Plan.model_validate(run.plan) if run.plan else Plan()
+
+        logger.info(f"[Crash Recovery] Resuming execution loop for run {run_id} (steps logged: {run.step_count})")
+        return await self._execute_loop(
+            run_id,
+            goal,
+            plan,
+            company_context,
+            capabilities=capabilities,
+        )
 
     async def _recover_auth(self, run_id: str, system: str = "erp") -> None:
         """Re-authenticate using stored credentials from company systems vault."""
@@ -436,6 +475,7 @@ class AgentExecutor:
             tool_name = action.tool or "snapshot"
             tool_def = self.tools.get(tool_name)
             risk_tier = tool_def.risk_tier if tool_def else RiskTier.READ
+            tier_str = risk_tier.value if isinstance(risk_tier, RiskTier) else str(risk_tier)
 
             # If this action was just approved by the user via resume(), bypass policy hold
             was_approved = working_memory.pop("approval_status", None) == "APPROVED"
@@ -456,6 +496,15 @@ class AgentExecutor:
                 working_memory["pending_approval_action"] = action_desc
                 working_memory["approval_reason"] = reason
                 self.run_manager.update_run(run_id, working_memory=working_memory)
+                # Create durable approval inbox entry for human operator
+                self.approval_inbox.create_request(
+                    run_id=run_id,
+                    action=action_desc,
+                    args=action.args,
+                    reason=reason,
+                    risk_tier=tier_str,
+                    timeout_seconds=300.0,
+                )
                 pause_step = StepRecord(
                     run_id=run_id,
                     step_index=step_index,
@@ -479,22 +528,54 @@ class AgentExecutor:
 
             elif policy_decision.effect == PolicyEffect.DENY:
                 logger.warning(f"Action '{tool_name}' DENIED by policy: {policy_decision.reason}")
+                if policy_decision.rule_id == "prompt_injection_exfiltration_blocked":
+                    working_memory["security_alert"] = policy_decision.reason
+                    logger.error(f"[SECURITY ALERT] {policy_decision.reason}")
                 tool_res = ToolResult.failure(
                     error=f"DENIED by policy rule '{policy_decision.rule_id}': {policy_decision.reason}"
                 )
                 duration_ms = 0.0
             else:
                 # ALLOW
-                start_t = time.monotonic()
-                tool_res = await self.tools.execute(tool_name, action.args)
+                effective_args = dict(action.args)
+                if was_approved and "edited_args" in working_memory:
+                    edited = working_memory.pop("edited_args")
+                    if isinstance(edited, dict):
+                        effective_args.update(edited)
+                        logger.info(f"[Approval Edited Args] Using edited arguments: {effective_args}")
 
-                # Fault recovery: Transient 500 retry
-                if not tool_res.ok and ("500" in str(tool_res.error) or "Internal Server Error" in str(tool_res.error)):
-                    logger.warning(f"Transient error encountered on tool '{tool_name}'. Retrying with backoff...")
-                    await asyncio.sleep(1.0)
-                    tool_res = await self.tools.execute(tool_name, action.args)
+                # Check Idempotency for write tools
+                is_write = risk_tier in {RiskTier.REVERSIBLE_WRITE, RiskTier.IRREVERSIBLE_WRITE, RiskTier.EXTERNAL}
+                context_hint = ""
+                if tool_name.startswith("browser_"):
+                    try:
+                        from core.tools.browser import get_browser_manager
+                        bm = get_browser_manager()
+                        if bm._page:
+                            context_hint = bm._page.url
+                    except Exception:
+                        pass
+                idemp_key = self.idempotency.compute_key(run_id, tool_name, effective_args, context_hint=context_hint) if is_write else ""
 
-                duration_ms = (time.monotonic() - start_t) * 1000.0
+                if is_write and self.idempotency.is_executed(idemp_key):
+                    cached_res = self.idempotency.get_cached_result(idemp_key)
+                    logger.info(f"[Idempotency Cache Hit] Skipping duplicate write for {tool_name} (key={idemp_key[:8]}...)")
+                    tool_res = cached_res or ToolResult.success(data={"idempotency_cached": True})
+                    duration_ms = 0.0
+                else:
+                    start_t = time.monotonic()
+                    tool_res = await self.tools.execute(tool_name, effective_args)
+
+                    # Fault recovery: Transient 500 retry
+                    if not tool_res.ok and ("500" in str(tool_res.error) or "Internal Server Error" in str(tool_res.error)):
+                        logger.warning(f"Transient error encountered on tool '{tool_name}'. Retrying with backoff...")
+                        await asyncio.sleep(1.0)
+                        tool_res = await self.tools.execute(tool_name, effective_args)
+
+                    duration_ms = (time.monotonic() - start_t) * 1000.0
+
+                    if is_write and tool_res.ok:
+                        self.idempotency.record_execution(idemp_key, run_id, tool_name, effective_args, tool_res)
 
             # 6. Normalize Observation & Offload Artifacts
             obs_summary, obs_data = self.context_manager.normalize_observation(
@@ -548,6 +629,37 @@ class AgentExecutor:
                 await self._recover_auth(run_id, system=target_sys)
                 working_memory.pop("session_expired", None)
                 working_memory.pop("auth_required", None)
+                self.lesson_store.record_lesson(
+                    trigger_pattern="session expiry",
+                    category="auth_recovery",
+                    learned_solution="Session tokens expire mid-task; re-authenticate via company credentials vault.",
+                    evidence_run_id=run_id,
+                )
+
+            # Record operational lessons when fault recovery or corrections are observed
+            if "globex" in goal.outcome.lower() and ("mail" in tool_name or "files" in tool_name):
+                self.lesson_store.record_lesson(
+                    trigger_pattern="globex",
+                    category="source_switch",
+                    learned_solution="For Globex Systems, search Mailbox or Fileshare directly when invoices are missing from Portal.",
+                    evidence_run_id=run_id,
+                )
+
+            if tool_res.error and "date" in str(tool_res.error).lower():
+                self.lesson_store.record_lesson(
+                    trigger_pattern="erp date format",
+                    category="field_format",
+                    learned_solution="Acme ERP requires dates in YYYY-MM-DD format.",
+                    evidence_run_id=run_id,
+                )
+
+            if "process & post bill" in obs_summary.lower() or "renamed" in obs_summary.lower():
+                self.lesson_store.record_lesson(
+                    trigger_pattern="process & post bill",
+                    category="ui_drift",
+                    learned_solution="Acme ERP 'Post Bill' button is renamed to 'Process & Post Bill' (#save-bill-btn).",
+                    evidence_run_id=run_id,
+                )
 
             # Advance plan or trigger re-plan
             if reflection.intent_completed:

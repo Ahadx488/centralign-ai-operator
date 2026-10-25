@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CentrAlign AI — Human Approvals Inbox</title>
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+    <style>
+        :root {
+            --bg-color: #f8fafc;
+            --text-color: #0f172a;
+            --card-bg: #ffffff;
+            --border-color: #e2e8f0;
+            --primary: #2563eb;
+            --primary-hover: #1d4ed8;
+            --success: #16a34a;
+            --danger: #dc2626;
+            --warning: #d97706;
+            --purple: #7c3aed;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            line-height: 1.5;
+            padding-bottom: 60px;
+        }
+        nav.system-nav {
+            background-color: #0f172a;
+            color: #ffffff;
+            padding: 12px 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-bottom: 1px solid #1e293b;
+        }
+        nav.system-nav a {
+            color: #94a3b8;
+            text-decoration: none;
+            margin-right: 18px;
+            font-size: 13px;
+            font-weight: 500;
+        }
+        nav.system-nav a.active, nav.system-nav a:hover {
+            color: #38bdf8;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 24px auto;
+            padding: 0 20px;
+        }
+        .card {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            margin-bottom: 20px;
+        }
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            background-color: var(--primary);
+            color: #ffffff;
+            font-size: 13px;
+            font-weight: 600;
+            padding: 8px 16px;
+            border-radius: 6px;
+            border: none;
+            cursor: pointer;
+            text-decoration: none;
+            transition: all 0.15s ease;
+        }
+        .btn-success { background-color: var(--success); color: #fff; }
+        .btn-success:hover { background-color: #15803d; }
+        .btn-danger { background-color: var(--danger); color: #fff; }
+        .btn-danger:hover { background-color: #b91c1c; }
+        .btn-secondary { background-color: #f1f5f9; color: #334155; border: 1px solid #cbd5e1; }
+        .btn-secondary:hover { background-color: #e2e8f0; }
+        .btn-sm { padding: 5px 12px; font-size: 12px; }
+        .status-pill {
+            display: inline-block;
+            font-size: 11px;
+            font-weight: 700;
+            padding: 3px 10px;
+            border-radius: 9999px;
+            text-transform: uppercase;
+        }
+        .status-pending { background: #fef3c7; color: #92400e; }
+        .status-approved { background: #dcfce7; color: #166534; }
+        .status-rejected { background: #fee2e2; color: #991b1b; }
+        .status-escalated { background: #fae8ff; color: #86198f; }
+        table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+        th, td { text-align: left; padding: 12px; border-bottom: 1px solid var(--border-color); }
+        th { background: #f8fafc; font-weight: 600; color: #475569; }
+        textarea {
+            width: 100%;
+            font-family: monospace;
+            font-size: 12px;
+            padding: 8px;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            margin-top: 6px;
+            resize: vertical;
+        }
+    </style>
+</head>
+<body>
+    <nav class="system-nav">
+        <div>
+            <strong style="color: #38bdf8; margin-right: 20px;">CentrAlign AI</strong>
+            <a href="/ui">⚡ Agent Dashboard</a>
+            <a href="/ui/approvals" class="active">🛡️ Approvals Inbox</a>
+            <a href="/portal/invoices">Vendor Portal</a>
+            <a href="/erp/bills">Acme ERP</a>
+            <a href="/mail/inbox">Mailbox</a>
+            <a href="/files/browse">Shared Files</a>
+            <a href="/tickets/list">Service Desk & HR</a>
+        </div>
+        <div>
+            <span class="status-pill status-approved">founding-v1</span>
+        </div>
+    </nav>
+
+    <div class="container">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+            <div>
+                <h1 style="font-size: 22px; font-weight: 800; color: #0f172a;">🛡️ Human-in-the-Loop Approvals Inbox</h1>
+                <p style="font-size: 13px; color: #64748b;">Review, edit, or reject policy-held actions before execution side effects.</p>
+            </div>
+            <div>
+                <a href="/ui" class="btn btn-secondary">← Back to Agent Dashboard</a>
+            </div>
+        </div>
+
+        <!-- Pending Approvals Section -->
+        <div class="card">
+            <h2 style="font-size: 16px; font-weight: 700; color: #0f172a; margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
+                <span>Pending Approvals</span>
+                <span class="status-pill status-pending">{{ pending|length }} Pending</span>
+            </h2>
+
+            {% if pending %}
+                {% for req in pending %}
+                <div style="border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin-bottom: 16px; background: #fafafa;">
+                    <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px;">
+                        <div>
+                            <strong style="font-size: 14px; color: #0f172a;">{{ req.action }}</strong>
+                            <div style="font-size: 12px; color: #64748b; margin-top: 2px;">
+                                Run ID: <a href="/ui?run_id={{ req.run_id }}"><code>{{ req.run_id }}</code></a> | Risk: <code>{{ req.risk_tier }}</code> | Requested: {{ req.requested_at[:19] }}
+                            </div>
+                        </div>
+                        <span class="status-pill status-pending">PENDING DECISION</span>
+                    </div>
+
+                    <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px; margin-bottom: 14px;">
+                        <div style="font-size: 13px; font-weight: 600; color: #b45309; margin-bottom: 6px;">
+                            Policy Rationale: {{ req.reason }}
+                        </div>
+                        <div style="font-size: 12px; color: #475569;">
+                            Arguments: <code>{{ req.args }}</code>
+                        </div>
+                    </div>
+
+                    <!-- Action Decision Buttons -->
+                    <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                        <!-- Approve Form -->
+                        <form method="POST" action="/ui/approvals/{{ req.approval_id }}/approve">
+                            <button type="submit" class="btn btn-sm btn-success">✅ Approve & Resume</button>
+                        </form>
+
+                        <!-- Reject Form -->
+                        <form method="POST" action="/ui/approvals/{{ req.approval_id }}/reject">
+                            <button type="submit" class="btn btn-sm btn-danger">❌ Reject Action</button>
+                        </form>
+
+                        <!-- Toggle Edit Form -->
+                        <button type="button" class="btn btn-sm btn-secondary" onclick="document.getElementById('edit-box-{{ req.approval_id }}').style.display = document.getElementById('edit-box-{{ req.approval_id }}').style.display === 'none' ? 'block' : 'none'">
+                            ✏️ Edit Args & Approve
+                        </button>
+                    </div>
+
+                    <!-- Hidden Edit Args Form -->
+                    <div id="edit-box-{{ req.approval_id }}" style="display: none; margin-top: 14px; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px;">
+                        <form method="POST" action="/ui/approvals/{{ req.approval_id }}/edit">
+                            <label style="font-size: 12px; font-weight: 600; color: #334155;">Edit Arguments JSON:</label>
+                            <textarea name="edited_args_json" rows="4">{{ req.args }}</textarea>
+                            <div style="margin-top: 8px;">
+                                <button type="submit" class="btn btn-sm btn-success">Save Edited Args & Approve</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+                {% endfor %}
+            {% else %}
+                <p style="font-size: 13px; color: #64748b; padding: 16px 0;">No approval requests currently pending. All policy checks passed.</p>
+            {% endif %}
+        </div>
+
+        <!-- Past Decisions Audit Log -->
+        <div class="card">
+            <h2 style="font-size: 16px; font-weight: 700; color: #0f172a; margin-bottom: 12px;">Decided / Escalated History</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Approval ID</th>
+                        <th>Run ID</th>
+                        <th>Action</th>
+                        <th>Status</th>
+                        <th>Decided By</th>
+                        <th>Decided At</th>
+                        <th>Notes</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for req in history %}
+                    <tr>
+                        <td><code>{{ req.approval_id }}</code></td>
+                        <td><a href="/ui?run_id={{ req.run_id }}"><code>{{ req.run_id }}</code></a></td>
+                        <td>{{ req.action }}</td>
+                        <td>
+                            <span class="status-pill {% if req.status.value == 'approved' or req.status.value == 'edited_approved' %}status-approved{% elif req.status.value == 'rejected' %}status-rejected{% else %}status-escalated{% endif %}">
+                                {{ req.status.value }}
+                            </span>
+                        </td>
+                        <td>{{ req.decided_by or '-' }}</td>
+                        <td>{{ req.decided_at[:19] if req.decided_at else '-' }}</td>
+                        <td>{{ req.decision_notes or req.reason }}</td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="7" style="color: #64748b; text-align: center;">No past approval history yet.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</body>
+</html>

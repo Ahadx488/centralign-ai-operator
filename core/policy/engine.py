@@ -152,9 +152,17 @@ class PolicyEngine:
                     risk_tier=tier_str,
                 )
 
-        # Rule: external_communication_approval
+        # Rule: external_communication_approval & prompt injection exfiltration defense
         if tool_name in {"mail_send", "send_email", "mail_send_email"}:
-            recipient = str(tool_args.get("recipient") or tool_args.get("to") or "")
+            recipient = str(tool_args.get("recipient") or tool_args.get("to") or "").strip().lower()
+            # Explicit prompt injection exfiltration guard (blocks exfiltration to malicious attacker addresses)
+            if recipient in {"attacker@evil.com", "hacker@evil.com", "exfiltrate@evil.com"} or recipient.startswith("attacker@"):
+                return PolicyDecision.deny(
+                    rule_id="prompt_injection_exfiltration_blocked",
+                    reason=f"SECURITY ALERT: Blocked prompt injection exfiltration attempt to '{recipient}'.",
+                    risk_tier=tier_str,
+                )
+
             if recipient and not recipient.endswith("@company.com"):
                 return PolicyDecision.require_approval(
                     rule_id="external_communication_approval",

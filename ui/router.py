@@ -7,13 +7,14 @@ import os
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Body, Query, Request, Response
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi import APIRouter, Body, Form, Query, Request, Response
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from core.agent.executor import AgentExecutor
 from core.agent.reflector import Reflector
 from core.llm.client import get_llm_client
+from core.policy.approvals import ApprovalInbox, ApprovalStatus
 from core.runs.manager import RunManager
 from core.runs.models import RunRecord
 from core.scenarios import get_scenario_llm
@@ -215,6 +216,133 @@ async def approve_run(run_id: str, body: dict[str, Any] = Body(default_factory=d
     await asyncio.sleep(0.1)
 
     return {"ok": True, "run_id": run_id, "approved": approved}
+
+
+@router.get("/approvals", response_class=HTMLResponse)
+async def approvals_inbox_view(request: Request) -> Response:
+    """Render the Human-in-the-Loop Approvals Inbox."""
+    inbox = ApprovalInbox(db_path=RUNS_DB_PATH)
+    inbox.check_timeouts()  # Auto-escalate timed out requests
+    pending = inbox.get_pending()
+    all_reqs = inbox.list_requests(limit=40)
+    history = [r for r in all_reqs if r.status != ApprovalStatus.PENDING]
+
+    return templates.TemplateResponse(
+        request=request,
+        name="approvals.html",
+        context={
+            "pending": pending,
+            "history": history,
+        },
+    )
+
+
+@router.post("/approvals/{approval_id}/approve")
+async def approve_request_action(approval_id: str) -> Response:
+    """Approve an action from the Approvals Inbox and resume the corresponding agent run."""
+    inbox = ApprovalInbox(db_path=RUNS_DB_PATH)
+    req = inbox.decide(approval_id, decision="APPROVE", decided_by="human_operator")
+    run_id = req.run_id
+
+    executor = active_executors.get(run_id)
+    if not executor:
+        rm = get_run_manager()
+        sc_llm, _, _ = get_scenario_llm(1)
+        executor = AgentExecutor(
+            llm_client=sc_llm,
+            run_manager=rm,
+            registry=tool_registry,
+            reflector=Reflector(None),
+            verifier=IndependentVerifier(db_path="env/company.db", artifacts_dir=ARTIFACTS_DIR),
+        )
+        active_executors[run_id] = executor
+
+    async def _resume_worker():
+        try:
+            await executor.resume(run_id, approval_granted=True)
+        except Exception as e:
+            logger.error(f"Error resuming approved run {run_id}: {e}")
+
+    asyncio.create_task(_resume_worker())
+    await asyncio.sleep(0.1)
+    return RedirectResponse(url="/ui/approvals", status_code=303)
+
+
+@router.post("/approvals/{approval_id}/reject")
+async def reject_request_action(approval_id: str) -> Response:
+    """Reject an action from the Approvals Inbox and transition the agent run to ESCALATED."""
+    inbox = ApprovalInbox(db_path=RUNS_DB_PATH)
+    req = inbox.decide(approval_id, decision="REJECT", decided_by="human_operator")
+    run_id = req.run_id
+
+    executor = active_executors.get(run_id)
+    if not executor:
+        rm = get_run_manager()
+        sc_llm, _, _ = get_scenario_llm(1)
+        executor = AgentExecutor(
+            llm_client=sc_llm,
+            run_manager=rm,
+            registry=tool_registry,
+            reflector=Reflector(None),
+            verifier=IndependentVerifier(db_path="env/company.db", artifacts_dir=ARTIFACTS_DIR),
+        )
+        active_executors[run_id] = executor
+
+    async def _reject_worker():
+        try:
+            await executor.resume(run_id, approval_granted=False)
+        except Exception as e:
+            logger.error(f"Error rejecting run {run_id}: {e}")
+
+    asyncio.create_task(_reject_worker())
+    await asyncio.sleep(0.1)
+    return RedirectResponse(url="/ui/approvals", status_code=303)
+
+
+@router.post("/approvals/{approval_id}/edit")
+async def edit_and_approve_request_action(
+    approval_id: str,
+    edited_args_json: str = Form(...),
+) -> Response:
+    """Edit tool arguments and approve the modified action."""
+    inbox = ApprovalInbox(db_path=RUNS_DB_PATH)
+    try:
+        edited_args = json.loads(edited_args_json)
+    except Exception as e:
+        logger.warning(f"Could not parse edited JSON ({e}); passing raw dict: {edited_args_json}")
+        edited_args = {"raw_edit": edited_args_json}
+
+    req = inbox.decide(
+        approval_id,
+        decision="EDIT_APPROVE",
+        edited_args=edited_args,
+        decided_by="human_operator",
+        notes="Edited arguments by operator",
+    )
+    run_id = req.run_id
+
+    executor = active_executors.get(run_id)
+    if not executor:
+        rm = get_run_manager()
+        sc_llm, _, _ = get_scenario_llm(1)
+        executor = AgentExecutor(
+            llm_client=sc_llm,
+            run_manager=rm,
+            registry=tool_registry,
+            reflector=Reflector(None),
+            verifier=IndependentVerifier(db_path="env/company.db", artifacts_dir=ARTIFACTS_DIR),
+        )
+        active_executors[run_id] = executor
+
+    async def _edit_approve_worker():
+        try:
+            await executor.resume(run_id, approval_granted=True, edited_args=edited_args)
+        except Exception as e:
+            logger.error(f"Error resuming edited-approved run {run_id}: {e}")
+
+    asyncio.create_task(_edit_approve_worker())
+    await asyncio.sleep(0.1)
+    return RedirectResponse(url="/ui/approvals", status_code=303)
 
 
 @router.get("/runs/{run_id}/evidence", response_class=PlainTextResponse)

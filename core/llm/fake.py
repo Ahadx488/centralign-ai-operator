@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from pydantic import BaseModel
 
@@ -20,9 +20,10 @@ class FakeLLM(LLMClient):
 
     def __init__(
         self,
+        responses: list[Any] | None = None,
         model: str = "fake-model",
         default_response: str = "Default fake response",
-        **kwargs,
+        **kwargs: Any,
     ):
         super().__init__(model=model, api_key="fake-key", **kwargs)
         self.default_response = default_response
@@ -33,6 +34,15 @@ class FakeLLM(LLMClient):
             str, LLMResponse | Callable[[list[LLMMessage]], LLMResponse]
         ] = {}
         self.call_history: list[list[LLMMessage]] = []
+
+        if responses:
+            for item in responses:
+                if isinstance(item, (LLMResponse, Exception)) or callable(item):
+                    self.queue_response(item)
+                elif isinstance(item, BaseModel):
+                    self.queue_response(LLMResponse(parsed=item, provider="fake"))
+                elif isinstance(item, str):
+                    self.queue_response(LLMResponse(content=item, provider="fake"))
 
     def queue_response(
         self, response: LLMResponse | Exception | Callable[[list[LLMMessage]], LLMResponse]

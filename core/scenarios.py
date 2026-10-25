@@ -298,6 +298,104 @@ def create_scenario_1_llm(base_url: str = "http://127.0.0.1:8001") -> FakeLLM:
     return llm
 
 
+def create_renamed_elements_llm(base_url: str = "http://127.0.0.1:8001") -> FakeLLM:
+    """Happy Path under Renamed Elements / UI Drift: Uses distilled semantic labels resilient to attribute drift."""
+    llm = FakeLLM()
+
+    # 1. Goal
+    llm.queue_response(
+        LLMResponse(
+            parsed=Goal(
+                outcome="Find the latest invoice from Acme Corp Ltd, extract the amount and due date, and enter it into Acme ERP.",
+                success_criteria=[
+                    "Latest Acme Corp Ltd invoice PDF downloaded",
+                    "Amount and due date extracted",
+                    "New bill submitted in Acme ERP with attached PDF",
+                ],
+                constraints=["Do not duplicate bills"],
+                is_blocking=False,
+            ),
+            provider="fake",
+        )
+    )
+
+    # 2. Plan
+    llm.queue_response(
+        LLMResponse(
+            parsed=InitialPlanOutput(
+                intents=[
+                    Intent(
+                        id="intent_1",
+                        description="Log into SupplierConnect Portal and download latest invoice for Acme Corp Ltd",
+                        expected_outcome="Downloaded invoice PDF",
+                    ),
+                    Intent(
+                        id="intent_2",
+                        description="Extract invoice number, amount, and due date from downloaded document",
+                        expected_outcome="Invoice details in working memory",
+                    ),
+                    Intent(
+                        id="intent_3",
+                        description="Log into Acme ERP and submit a New Bill with details and attached PDF",
+                        expected_outcome="Bill confirmed in ERP",
+                    ),
+                ]
+            ),
+            provider="fake",
+        )
+    )
+
+    # Step 1: Open SupplierConnect Portal
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Navigating to portal login", tool="browser_open_url", args={"url": f"{base_url}/portal/login"})))
+    # Step 2: Fill email
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Entering portal credentials", tool="browser_type_text", args={"target": "email", "text": "supplier@acme.com"})))
+    # Step 3: Fill password
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Entering portal password", tool="browser_type_text", args={"target": "password", "text": "portal_pass123"})))
+    # Step 4: Click login button
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Submitting portal login form", tool="browser_click", args={"target": "Sign In to SupplierConnect"})))
+    # Step 5: Filter invoices by vendor
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Navigating to invoices page", tool="browser_open_url", args={"url": f"{base_url}/portal/invoices?search=Acme+Corp+Ltd"})))
+    # Step 6: Download PDF
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Downloading latest invoice PDF", tool="browser_download_file", args={"url": f"{base_url}/portal/download/INV-ACME-106.pdf", "save_dir": "artifacts/downloads"})))
+    # Step 7: Read downloaded PDF
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Extracting details from PDF", tool="read_file", args={"file_path": "artifacts/downloads/INV-ACME-106.pdf"})))
+    # Step 8: Open ERP Login
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Navigating to ERP login", tool="browser_open_url", args={"url": f"{base_url}/erp/login"})))
+    # Step 9: Enter ERP username
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Entering ERP username", tool="browser_type_text", args={"target": "username", "text": "admin"})))
+    # Step 10: Enter ERP password
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Entering ERP password", tool="browser_type_text", args={"target": "password", "text": "erp_pass123"})))
+    # Step 11: Click ERP Sign In
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Signing into Acme ERP", tool="browser_click", args={"target": "Sign In to Acme ERP"})))
+    # Step 12: Open New Bill form
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Opening New Bill entry form", tool="browser_open_url", args={"url": f"{base_url}/erp/bills/new"})))
+    # Step 13: Enter Vendor Name via drifted semantic label
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Entering vendor name into drifted input", tool="browser_type_text", args={"target": "Supplier Entity Name", "text": "Acme Corp Ltd"})))
+    # Step 14: Enter Invoice Number via drifted label
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Entering invoice number into drifted input", tool="browser_type_text", args={"target": "Bill Reference Number", "text": "INV-ACME-106"})))
+    # Step 15: Enter Amount via drifted label
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Entering amount into drifted input", tool="browser_type_text", args={"target": "Total Amount Payable", "text": "91015.34"})))
+    # Step 16: Enter Due Date via drifted label
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Entering due date into drifted input", tool="browser_type_text", args={"target": "Payment Due Date", "text": "2026-10-28"})))
+    # Step 17: Upload Attachment via drifted input
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Attaching PDF to bill record", tool="browser_upload_file", args={"target": "bill_document", "file_path": "artifacts/downloads/INV-ACME-106.pdf"})))
+    # Step 18: Submit Bill via renamed button
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Submitting bill via Process & Post Bill button", tool="browser_click", args={"target": "Process & Post Bill"})))
+    # Step 19: Finish and trigger independent verifier
+    llm.queue_response(
+        LLMResponse(
+            parsed=AgentAction(
+                thought="Bill submitted successfully to Acme ERP despite UI drift. Concluding task for verification.",
+                is_finish=True,
+                finish_summary="Successfully processed invoice INV-ACME-106 from Acme Corp Ltd for EUR 91,015.34 into Acme ERP.",
+            ),
+            provider="fake",
+        )
+    )
+
+    return llm
+
+
 def create_scenario_2_llm(base_url: str = "http://127.0.0.1:8001") -> FakeLLM:
     """Scenario 2: Mid-task session expiry recovery."""
     llm = FakeLLM()

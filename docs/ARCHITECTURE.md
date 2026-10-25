@@ -100,3 +100,35 @@ flowchart TD
   - **Live Run Timeline:** Polled every 1s via HTMX / vanilla JS showing state transitions, living plan intents, and working memory facts.
   - **Interactive Human-in-the-Loop Cards:** Clickable clarification choices or Approve/Reject buttons that resume the paused run in place.
   - **Verification & Evidence Viewer:** Ground-truth check results table, field comparison grid (source PDF vs. ERP values), and direct markdown evidence viewing.
+
+---
+
+## 4. Founding Engineer Subsystems (`founding-v1`)
+
+```mermaid
+flowchart LR
+    JobQueue["Durable Job Queue (SQLite)"] --> Worker["JobWorker (Heartbeats)"]
+    Worker --> Exec["AgentExecutor"]
+    Exec --> Idemp["IdempotencyStore (Context Hash)"]
+    Exec --> Policy["PolicyEngine & ApprovalsInbox"]
+    Exec --> Lessons["LessonStore (FTS Lessons)"]
+    Exec --> Verifier["Independent Verifier"]
+```
+
+### A. Durable Job Queue & Crash Recovery (`core/jobs/`)
+- **Queue Engine (`core/jobs/queue.py`):** Backed by SQLite table `jobs` supporting statuses `QUEUED`, `RUNNING`, `PAUSED`, `COMPLETED`, `FAILED`, periodic worker heartbeats, cron/scheduled triggers, and automatic worker failure retries.
+- **Heartbeat & Resumption (`core/jobs/worker.py`):** `JobWorker` maintains active heartbeats; orphaned tasks whose heartbeat times out are reclaimed via `reclaim_orphaned()`. Starting a worker runs `resume_interrupted_run(run_id)`, resuming execution from the exact last persisted SQLite step.
+
+### B. Write-Action Idempotency Engine (`core/jobs/idempotency.py`)
+- Every write-tier tool invocation computes an idempotency key:
+  $$\text{Key} = \text{MD5}(\text{run\_id} \,\|\, \text{tool\_name} \,\|\, \text{args\_json} \,\|\, \text{context\_hint})$$
+- Where `context_hint` captures the active URL or entity ID (preventing false collisions across different entities or pages).
+- If a crashed worker resumes and attempts to repeat a previously completed write step, `IdempotencyStore` immediately returns the cached result without repeating the external mutation.
+
+### C. Approvals Inbox (`core/policy/approvals.py` & `/ui/approvals`)
+- Durable human-in-the-loop approvals table recording pending actions, tool arguments, risk tier, policy rule triggered, and auto-escalation timeouts.
+- Human operators can `Approve`, `Reject`, or `Edit Args & Approve` directly from the HTMX dashboard or API.
+
+### D. Continuous Learning & Lessons Store (`core/memory/lessons.py`)
+- Whenever a run encounters a recoverable error (such as a missing source document or renamed UI element) or receives human feedback, `LessonStore` captures a structured `Lesson` in SQLite.
+- Future tasks query `LessonStore.retrieve_lessons(query)` at `Plan`/`Execute` time, pre-emptively avoiding obsolete paths and achieving measurable step reductions.
