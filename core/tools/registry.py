@@ -107,7 +107,19 @@ class ToolRegistry:
         self._tools.pop(name, None)
 
     def get(self, name: str) -> BaseTool | None:
-        return self._tools.get(name)
+        if name in self._tools:
+            return self._tools[name]
+        # Resolve common namespace aliases
+        for prefix in ("browser_", "files_", "mail_"):
+            candidate = f"{prefix}{name}"
+            if candidate in self._tools:
+                return self._tools[candidate]
+        for prefix in ("browser_", "files_", "mail_"):
+            if name.startswith(prefix):
+                stripped = name[len(prefix):]
+                if stripped in self._tools:
+                    return self._tools[stripped]
+        return None
 
     def list_tools(self) -> list[BaseTool]:
         return list(self._tools.values())

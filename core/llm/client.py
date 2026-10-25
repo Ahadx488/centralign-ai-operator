@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import abc
+import asyncio
 import json
 import logging
 import os
@@ -202,6 +203,22 @@ class LLMClient(abc.ABC):
                 raise
 
         raise LLMError(f"Exceeded max retries ({self.max_retries}): {last_error}")
+
+    async def generate_async(
+        self,
+        messages: list[LLMMessage],
+        tools: list[ToolDefinition] | None = None,
+        response_model: type[T] | None = None,
+        temperature: float = 0.2,
+    ) -> LLMResponse:
+        """Asynchronous execution of generate in a background thread."""
+        return await asyncio.to_thread(
+            self.generate,
+            messages=messages,
+            tools=tools,
+            response_model=response_model,
+            temperature=temperature,
+        )
 
     @abc.abstractmethod
     def _execute_generate(

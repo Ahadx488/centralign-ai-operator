@@ -6,6 +6,7 @@ import os
 import time
 from typing import Any
 
+import httpx
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 from pydantic import BaseModel, Field
 
@@ -217,14 +218,28 @@ class BrowserManager:
         if await ref_loc.count() > 0:
             return ref_loc
 
-        # 3. Try matching visible text / label in ref_map
+        # 3. Try matching visible text / label / name in ref_map
+        space_target = target.lower().replace("_", " ")
         for ref_id, info in self.ref_map.items():
-            if (info.text and target.lower() in info.text.lower()) or (
-                info.label and target.lower() in info.label.lower()
+            if (
+                (info.text and target.lower() in info.text.lower())
+                or (info.label and target.lower() in info.label.lower())
+                or (info.label and space_target in info.label.lower())
+                or (info.name and target.lower() == info.name.lower())
             ):
                 return page.locator(info.selector)
 
-        # 4. Try standard CSS selector
+        # 4. Try input/textarea/select by name or id attribute
+        try:
+            input_loc = page.locator(
+                f'input[name="{target}"], input#{target}, textarea[name="{target}"], select[name="{target}"]'
+            )
+            if await input_loc.count() > 0:
+                return input_loc.first
+        except Exception:
+            pass
+
+        # 5. Try standard CSS selector
         try:
             loc = page.locator(target)
             if await loc.count() > 0:
@@ -483,28 +498,50 @@ class ExtractTextTool(BaseTool):
 
 
 class DownloadFileArgs(BaseModel):
-    target: str = Field(description="Download button or link reference (e.g. 'e8') to trigger download")
+    target: str | None = Field(default=None, description="Download button or link reference (e.g. 'e8') to trigger download")
+    url: str | None = Field(default=None, description="Direct URL to download from")
     save_dir: str | None = Field(default=None, description="Directory to save file (defaults to artifacts/downloads)")
 
 
 class DownloadFileTool(BaseTool):
     name = "browser_download_file"
-    description = "Click a download link or button, intercept the download, and save file to disk."
+    description = "Click a download link or button, intercept the download, and save file to disk (or download directly from URL)."
     args_schema = DownloadFileArgs
     risk_tier = RiskTier.READ
 
     async def _run(self, **kwargs: Any) -> ToolResult:
-        target: str = kwargs["target"]
+        target: str | None = kwargs.get("target")
+        url: str | None = kwargs.get("url")
         save_dir: str | None = kwargs.get("save_dir")
         ensure_browser_artifact_dirs()
         dest_dir = save_dir or DOWNLOADS_DIR
         os.makedirs(dest_dir, exist_ok=True)
 
+        if url:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.get(url)
+                if resp.status_code >= 400:
+                    return ToolResult.failure(f"HTTP download failed with status {resp.status_code}")
+                cd = resp.headers.get("content-disposition", "")
+                filename = cd.split("filename=")[-1].strip('"') if "filename=" in cd else os.path.basename(url.split("?")[0])
+                if not filename or filename == "download":
+                    filename = "downloaded_file.bin"
+                dest_path = os.path.join(dest_dir, filename)
+                with open(dest_path, "wb") as f:
+                    f.write(resp.content)
+                return ToolResult.success(
+                    data={"downloaded_file": dest_path, "downloaded_to": dest_path, "filename": filename, "size_bytes": len(resp.content)},
+                    evidence_refs=[dest_path],
+                )
+
+        if not target:
+            return ToolResult.failure("Either 'target' or 'url' must be specified for browser_download_file.")
+
         mgr = get_browser_manager()
         page = await mgr.get_page()
         locator = await mgr.resolve_locator(target)
 
-        async with page.expect_download() as download_info:
+        async with page.expect_download(timeout=10000) as download_info:
             await locator.click()
 
         download = await download_info.value
@@ -513,7 +550,7 @@ class DownloadFileTool(BaseTool):
         await download.save_as(dest_path)
 
         return ToolResult.success(
-            data={"downloaded_file": dest_path, "filename": filename, "size_bytes": os.path.getsize(dest_path)},
+            data={"downloaded_file": dest_path, "downloaded_to": dest_path, "filename": filename, "size_bytes": os.path.getsize(dest_path)},
             evidence_refs=[dest_path],
         )
 

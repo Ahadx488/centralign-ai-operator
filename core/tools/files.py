@@ -5,6 +5,7 @@ import fnmatch
 import json
 import logging
 import os
+import tempfile
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -19,6 +20,10 @@ ALLOWED_ROOTS = [
     os.path.abspath("."),
     os.path.abspath("./env/fileshare"),
     os.path.abspath("./artifacts"),
+    os.path.abspath("./data"),
+    os.path.abspath(tempfile.gettempdir()),
+    "/tmp",
+    "/private/var/folders",
 ]
 
 
