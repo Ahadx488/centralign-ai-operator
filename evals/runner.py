@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import os
@@ -88,26 +89,40 @@ def update_readme_with_results(markdown_content: str) -> None:
         print(f"Warning: Failed to update README.md with results: {e}")
 
 
-async def run_evaluation_suite() -> int:
-    """Run all 16 evaluation tasks, compute §7 metrics, and generate reports."""
+async def run_evaluation_suite(
+    task_filter: list[str] | None = None,
+    category_filter: str | None = None,
+    trials_per_task: int = 1,
+) -> int:
+    """Run evaluation tasks N times, compute metrics, and generate reports."""
     ensure_server_running()
 
-    tasks = define_eval_tasks()
-    total_tasks = len(tasks)
+    all_tasks = define_eval_tasks()
+    tasks = all_tasks
+    if task_filter:
+        tasks = [t for t in tasks if t.task_id in task_filter or any(f in t.task_id for f in task_filter)]
+    if category_filter:
+        tasks = [t for t in tasks if t.category == category_filter]
+
+    total_tasks = len(tasks) * trials_per_task
 
     print("\n" + "=" * 80)
     print("      CentrAlign AI — Founding-v1 Comprehensive Evaluation Suite")
-    print(f"      Total Evaluation Variants: {total_tasks} | (§7 Target: >=15 variants)")
+    print(f"      Tasks: {len(tasks)} | Trials per task: {trials_per_task} | Total Runs: {total_tasks}")
     print("=" * 80 + "\n")
 
     results: list[EvalTaskResult] = []
 
-    for idx, t_var in enumerate(tasks, 1):
-        print(f"[{idx:02d}/{total_tasks:02d}] Running `{t_var.task_id}`: {t_var.name} ... ", end="", flush=True)
-        res = await execute_eval_task(t_var)
-        results.append(res)
-        status_str = "PASS" if res.verified_success else "FAIL"
-        print(f"[{status_str}] ({res.steps_count} steps, {res.duration_sec:.1f}s)")
+    run_count = 0
+    for trial in range(1, trials_per_task + 1):
+        trial_prefix = f"[Trial {trial}/{trials_per_task}] " if trials_per_task > 1 else ""
+        for idx, t_var in enumerate(tasks, 1):
+            run_count += 1
+            print(f"[{run_count:02d}/{total_tasks:02d}] {trial_prefix}Running `{t_var.task_id}`: {t_var.name} ... ", end="", flush=True)
+            res = await execute_eval_task(t_var)
+            results.append(res)
+            status_str = "PASS" if res.verified_success else "FAIL"
+            print(f"[{status_str}] ({res.steps_count} steps, {res.duration_sec:.1f}s)")
 
     # Compute Section 7 Metrics
     passed_tasks = sum(1 for r in results if r.verified_success)
@@ -178,7 +193,20 @@ async def run_evaluation_suite() -> int:
 
 
 def main() -> None:
-    code = asyncio.run(run_evaluation_suite())
+    parser = argparse.ArgumentParser(description="CentrAlign AI Evaluation Suite")
+    parser.add_argument("--tasks", type=str, default=None, help="Comma-separated task IDs or patterns to evaluate")
+    parser.add_argument("--category", type=str, default=None, help="Category filter")
+    parser.add_argument("-n", "--trials", type=int, default=1, help="Number of trials per task")
+    args = parser.parse_args()
+
+    task_filter = [t.strip() for t in args.tasks.split(",")] if args.tasks else None
+    code = asyncio.run(
+        run_evaluation_suite(
+            task_filter=task_filter,
+            category_filter=args.category,
+            trials_per_task=args.trials,
+        )
+    )
     sys.exit(code)
 
 

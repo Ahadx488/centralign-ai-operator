@@ -144,11 +144,13 @@ async def launch_run(
     if scenario is not None:
         sc_num = int(scenario) if str(scenario).isdigit() else scenario
         scenarios_file = Path("company/scenarios.yaml")
-        sc_data: dict[str, Any] = {}
+        sc_data: dict[Any, Any] = {}
         if scenarios_file.exists():
             with open(scenarios_file) as sf:
-                sc_data = yaml.safe_load(sf) or {}
-        sc_info = sc_data.get(sc_num, sc_data.get(str(sc_num), {}))
+                raw_loaded = yaml.safe_load(sf)
+                if isinstance(raw_loaded, dict):
+                    sc_data = raw_loaded
+        sc_info: dict[str, Any] = sc_data.get(sc_num) or sc_data.get(str(sc_num)) or {}
         task_str = task_str or sc_info.get("task", "")
         sc_faults = sc_info.get("faults")
         if sc_faults:
