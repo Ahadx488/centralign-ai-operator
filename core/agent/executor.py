@@ -633,6 +633,17 @@ class AgentExecutor:
                     m_url = re.search(r"(https?://[^\s'\"\)]+)", action.thought)
                     if m_url:
                         effective_args["url"] = m_url.group(1).rstrip(".,;")
+                if tool_name == "browser_upload_file":
+                    if not effective_args.get("file_path"):
+                        effective_args["file_path"] = (
+                            effective_args.get("path")
+                            or effective_args.get("value")
+                            or effective_args.get("text")
+                        )
+                    if not effective_args.get("file_path"):
+                        m_f = re.search(r"['\"]?([a-zA-Z0-9_\-\./\\]+\.(?:pdf|csv|json|txt))['\"]?", action.thought, re.IGNORECASE)
+                        if m_f:
+                            effective_args["file_path"] = m_f.group(1).strip("'\"")
 
                 # Check Idempotency for backend write tools (avoid caching interactive browser UI clicks/typing)
                 is_write = (

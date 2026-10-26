@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from core.tools.registry import BaseTool, RiskTier, ToolResult
 
@@ -369,8 +369,15 @@ class ClickTool(BaseTool):
 
 class TypeTextArgs(BaseModel):
     target: str = Field(description="Target input reference ID (e.g. 'e2') or field name")
-    text: str = Field(description="Text to type into input field")
+    text: str = Field(default="", description="Text to type into input field")
+    value: str | None = Field(default=None, description="Alias for text")
     clear: bool = Field(default=True, description="Whether to clear existing text before typing")
+
+    @model_validator(mode="after")
+    def resolve_text(self) -> TypeTextArgs:
+        if not self.text and self.value:
+            self.text = self.value
+        return self
 
 
 class TypeTextTool(BaseTool):
@@ -567,7 +574,17 @@ class DownloadFileTool(BaseTool):
 
 class UploadFileArgs(BaseModel):
     target: str = Field(description="File input reference (e.g. 'e7') or selector")
-    file_path: str = Field(description="Absolute or relative path to file on disk to upload")
+    file_path: str = Field(default="", description="Absolute or relative path to file on disk to upload")
+    path: str | None = Field(default=None, description="Alias for file_path")
+    value: str | None = Field(default=None, description="Alias for file_path")
+
+    @model_validator(mode="after")
+    def resolve_file_path(self) -> UploadFileArgs:
+        resolved = self.file_path or self.path or self.value
+        if not resolved:
+            raise ValueError("Must provide 'file_path', 'path', or 'value' for file upload.")
+        self.file_path = resolved
+        return self
 
 
 class UploadFileTool(BaseTool):
