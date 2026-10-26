@@ -8,6 +8,8 @@ systems:
       login_url: "http://localhost:8001/erp/login"
       username_field: "username"
       password_field: "password"
+      default_username: "admin"
+      password_ref: "{{vault:erp_credentials.password}}"
       default_credentials: "vault:erp_credentials"
     capabilities:
       - "create_bill"
@@ -23,6 +25,8 @@ systems:
       login_url: "http://localhost:8001/portal/login"
       username_field: "email"
       password_field: "password"
+      default_username: "supplier@acme.com"
+      password_ref: "{{vault:vendor_portal_credentials.password}}"
       default_credentials: "vault:vendor_portal_credentials"
     capabilities:
       - "list_invoices"
@@ -57,6 +61,8 @@ systems:
       login_url: "http://localhost:8001/tickets/login"
       username_field: "username"
       password_field: "password"
+      default_username: "operator"
+      password_ref: "{{vault:tickets_credentials.password}}"
       default_credentials: "vault:tickets_credentials"
     capabilities:
       - "create_ticket"

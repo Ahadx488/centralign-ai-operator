@@ -56,13 +56,22 @@ class BaseTool(abc.ABC):
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """
-        Public execution wrapper ensuring validation and uniform error handling.
+        Public execution wrapper ensuring validation, template secret injection,
+        and uniform error handling.
         """
         try:
             # 1. Validate arguments against schema
             validated_args = self.args_schema.model_validate(kwargs)
-            # 2. Run tool logic
-            result = await self._run(**validated_args.model_dump())
+            # 2. Resolve vault references to real credentials securely inside tool layer
+            from core.memory.vault import credential_vault
+            resolved_dict = credential_vault.resolve_templates(validated_args.model_dump())
+            # 3. Run tool logic
+            result = await self._run(**resolved_dict)
+            # 4. Strip any reflected secrets from result before returning to agent or logs
+            if result.error:
+                result.error = credential_vault.sanitize_secrets(result.error)
+            if isinstance(result.data, str):
+                result.data = credential_vault.sanitize_secrets(result.data)
             return result
         except ValidationError as ve:
             logger.warning(f"Validation error in tool '{self.name}': {ve}")

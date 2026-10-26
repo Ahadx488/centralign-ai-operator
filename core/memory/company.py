@@ -85,14 +85,16 @@ class CompanyMemoryIndex:
                     if login_info:
                         login_url = login_info.get("login_url", "")
                         cred_key = login_info.get("default_credentials", "")
-                        creds_detail = ""
-                        if cred_key:
+                        user_name = login_info.get("default_username")
+                        if not user_name and cred_key:
                             creds = vault.get(cred_key)
-                            if creds:
-                                u_name = creds.get("username") or creds.get("email")
-                                p_word = creds.get("password")
-                                creds_detail = f" (username: '{u_name}', password: '{p_word}')"
-                        login_str = f"\nLogin URL: {login_url}\nCredentials: {cred_key}{creds_detail}"
+                            user_name = creds.get("username") or creds.get("email") or ""
+                        pass_ref = login_info.get("password_ref") or f"{{{{vault:{cred_key}.password}}}}"
+                        login_str = (
+                            f"\nLogin URL: {login_url}\n"
+                            f"Login Username: '{user_name}'\n"
+                            f"Login Password Reference: '{pass_ref}' (Use this exact vault reference template in browser_type_text for password)"
+                        )
                     content = f"System: {name}\nURL: {url}\nDescription: {desc}\nCapabilities: {caps}{login_str}"
                     docs_to_insert.append(
                         (f"system:{sys_key}", "system", name, content, str(systems_path))

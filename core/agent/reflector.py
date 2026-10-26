@@ -135,6 +135,32 @@ class Reflector:
                     temperature=0.1,
                 )
                 reflection = response.get_parsed(Reflection)
+
+                # Ensure extracted document fields are preserved in facts_learned
+                clean_tool = (action.tool or "").lower()
+                if any(k in clean_tool for k in ["read_file", "extract_text", "download"]):
+                    text_content = ""
+                    if isinstance(result.data, dict) and "content" in result.data:
+                        text_content = str(result.data["content"])
+                    elif isinstance(result.data, str):
+                        text_content = result.data
+
+                    inv_match = re.search(r"\b(INV-[A-Z0-9-]+)\b", text_content, re.IGNORECASE)
+                    if inv_match and "invoice_number" not in reflection.facts_learned:
+                        reflection.facts_learned["invoice_number"] = inv_match.group(1).upper()
+
+                    amt_match = re.search(r"(?:Total(?:\s+Amount|\s+Payable)?|Amount(?:\s+Due)?|Grand\s+Total(?:\s+Payable)?|Balance\s+Due)[:\s]*(?:[A-Z]{3}|[$€₹])?\s*([\d,]+(?:\.\d{2})?)", text_content, re.IGNORECASE)
+                    if amt_match and "amount" not in reflection.facts_learned:
+                        clean_amt = re.sub(r"[^\d.]", "", amt_match.group(1))
+                        try:
+                            reflection.facts_learned["amount"] = float(clean_amt)
+                        except ValueError:
+                            pass
+
+                    date_match = re.search(r"(?:Due\s+Date|Payment\s+Due(?:\s+Date)?|Due)[:\s]*(\d{4}-\d{2}-\d{2}|\d{2}/\d{2}/\d{4})", text_content, re.IGNORECASE)
+                    if date_match and "due_date" not in reflection.facts_learned:
+                        reflection.facts_learned["due_date"] = date_match.group(1)
+
                 logger.info(
                     f"Reflected: {reflection.observation_type.value} | Intent Done: {reflection.intent_completed} | "
                     f"Facts: {list(reflection.facts_learned.keys())}"
@@ -163,7 +189,7 @@ class Reflector:
                 facts["invoice_number"] = inv_match.group(1).upper()
 
             # Regex search for amount
-            amt_match = re.search(r"(?:Total(?:\s+Amount)?|Amount(?:\s+Due)?|Grand\s+Total)[:\s]*([$€₹]?\s*[\d,]+(?:\.\d{2})?)", text_content, re.IGNORECASE)
+            amt_match = re.search(r"(?:Total(?:\s+Amount|\s+Payable)?|Amount(?:\s+Due)?|Grand\s+Total(?:\s+Payable)?|Balance\s+Due)[:\s]*(?:[A-Z]{3}|[$€₹])?\s*([\d,]+(?:\.\d{2})?)", text_content, re.IGNORECASE)
             if amt_match:
                 clean_amt = re.sub(r"[^\d.]", "", amt_match.group(1))
                 try:

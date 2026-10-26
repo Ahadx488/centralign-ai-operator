@@ -215,18 +215,18 @@ class LessonStore:
             return []
 
         from core.llm.models import LLMMessage
+        from core.memory.vault import credential_vault
 
         log_lines = []
         for s in steps:
             status = "OK" if getattr(s, "ok", True) else f"ERROR: {getattr(s, 'error', '')}"
-            log_lines.append(
-                f"Step {getattr(s, 'step_index', 0)} | Tool: {getattr(s, 'tool_name', '')}({getattr(s, 'tool_args', '')}) | Result: {status} | Obs: {getattr(s, 'observation_summary', '')}"
-            )
+            raw_line = f"Step {getattr(s, 'step_index', 0)} | Tool: {getattr(s, 'tool_name', '')}({getattr(s, 'tool_args', '')}) | Result: {status} | Obs: {getattr(s, 'observation_summary', '')}"
+            log_lines.append(credential_vault.sanitize_secrets(raw_line))
 
         prompt = f"""You are CentrAlign's Continuous Learning Engine.
 Analyze the following completed execution log to extract any operational lessons learned from errors, retries, source switches, UI drift, or format adjustments.
 
-Task Goal: {goal_outcome}
+Task Goal: {credential_vault.sanitize_secrets(goal_outcome)}
 
 Execution Step Log:
 {chr(10).join(log_lines)}
@@ -235,6 +235,7 @@ Instructions:
 - If the agent encountered an error and resolved it (e.g. element renamed, auth expired, document not in primary location, date format rejected), produce a generic, reusable operational Lesson.
 - Do NOT generate trivial lessons if the run proceeded without any obstacles or insights.
 - The trigger_pattern should be concise keywords likely to appear in similar future tasks.
+- NEVER include sensitive passwords or credentials in lessons. Always refer to vault references (e.g. {{{{vault:system.password}}}}).
 """
         try:
             resp = await llm.generate_async(
@@ -247,9 +248,9 @@ Instructions:
             if parsed and parsed.lessons:
                 for les in parsed.lessons:
                     saved = self.record_lesson(
-                        trigger_pattern=les.trigger_pattern,
-                        category=les.category,
-                        learned_solution=les.learned_solution,
+                        trigger_pattern=credential_vault.sanitize_secrets(les.trigger_pattern),
+                        category=credential_vault.sanitize_secrets(les.category),
+                        learned_solution=credential_vault.sanitize_secrets(les.learned_solution),
                         evidence_run_id=run_id,
                         confidence=les.confidence,
                     )

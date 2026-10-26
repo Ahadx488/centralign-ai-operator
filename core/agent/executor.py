@@ -17,11 +17,11 @@ from core.agent.planner import Planner
 from core.agent.reflector import Reflector
 from core.jobs.idempotency import IdempotencyStore
 from core.llm.client import LLMClient
-from core.llm.fake import FakeLLM
 from core.llm.models import LLMMessage
 from core.memory.company import CompanyMemoryIndex
 from core.memory.lessons import LessonStore
 from core.memory.proposed import ProposedMemoryStore
+from core.memory.vault import credential_vault
 from core.policy.approvals import ApprovalInbox
 from core.policy.engine import PolicyEngine
 from core.policy.models import PolicyDecision, PolicyEffect, RunCapabilities
@@ -75,7 +75,7 @@ class AgentExecutor:
 
         self.interpreter = interpreter or GoalInterpreter(self.llm)
         self.planner = planner or Planner(self.llm)
-        self.reflector = reflector or Reflector(None if isinstance(self.llm, FakeLLM) else self.llm)
+        self.reflector = reflector or Reflector(None if getattr(self.llm, "__class__", None) and self.llm.__class__.__name__ == "FakeLLM" else self.llm)
         self.context_manager = ContextManager(self.run_manager)
         self.company_memory = CompanyMemoryIndex(company_dir=self.company_dir)
         self.proposed_memory = ProposedMemoryStore()
@@ -223,49 +223,6 @@ class AgentExecutor:
             company_context,
             capabilities=capabilities,
         )
-
-    async def _recover_auth(self, run_id: str, system: str = "erp") -> None:
-        """Re-authenticate using stored credentials from company systems vault."""
-        logger.info(f"[Auth Recovery] Re-authenticating session for system '{system}'")
-        import yaml
-
-        from core.memory.vault import credential_vault
-
-        systems_path = Path("company/systems.yaml")
-        systems_cfg: dict[str, Any] = {}
-        if systems_path.exists():
-            try:
-                systems_cfg = yaml.safe_load(systems_path.read_text(encoding="utf-8")) or {}
-            except Exception:
-                pass
-
-        sys_dict = systems_cfg.get("systems", {})
-        sys_key = system
-        if sys_key not in sys_dict:
-            for k in sys_dict:
-                if system.lower() in k.lower() or k.lower() in system.lower():
-                    sys_key = k
-                    break
-
-        sys_info = sys_dict.get(sys_key, {})
-        login_info = sys_info.get("login", {})
-        login_url = login_info.get("login_url") or sys_info.get("url", "")
-        if not login_url.endswith("/login") and "/login" not in login_url:
-            login_url = f"{login_url.rstrip('/')}/login"
-
-        user_field = login_info.get("username_field", "username")
-        pass_field = login_info.get("password_field", "password")
-        vault_ref = login_info.get("default_credentials", f"vault:{sys_key}_credentials")
-        creds = credential_vault.get(vault_ref)
-
-        user_val = creds.get("username") or creds.get("email", "")
-        pass_val = creds.get("password", "")
-
-        if login_url and user_val and pass_val:
-            await self.tools.execute("browser_open_url", {"url": login_url})
-            await self.tools.execute("browser_type_text", {"target": f"#{user_field}", "text": user_val})
-            await self.tools.execute("browser_type_text", {"target": f"#{pass_field}", "text": pass_val})
-            await self.tools.execute("browser_click", {"target": "button[type='submit']"})
 
     async def _execute_loop(
         self,
@@ -715,24 +672,17 @@ class AgentExecutor:
 
             # Update working memory & record learned facts to proposed memory
             if reflection.facts_learned:
-                working_memory.update(reflection.facts_learned)
                 for k, v in reflection.facts_learned.items():
+                    sanitized_val = credential_vault.sanitize_secrets(v)
+                    working_memory[k] = sanitized_val
                     if k not in {"session_expired", "auth_required", "active_discrepancies", "options", "pending_question"}:
                         self.proposed_memory.record_fact(
                             run_id=run_id,
                             step_index=step_index,
                             category="learned_fact",
                             key=k,
-                            value=str(v),
+                            value=str(sanitized_val),
                         )
-
-            # Fault recovery: Session Expiry Mid-Task
-            if reflection.facts_learned.get("session_expired"):
-                logger.warning(f"Handling detected session expiry at step {step_index}")
-                target_sys = "portal" if "/portal" in obs_summary else ("tickets" if "/tickets" in obs_summary else "erp")
-                await self._recover_auth(run_id, system=target_sys)
-                working_memory.pop("session_expired", None)
-                working_memory.pop("auth_required", None)
 
             # Advance plan or trigger re-plan
             if reflection.intent_completed:
@@ -758,18 +708,18 @@ class AgentExecutor:
                 run_id=run_id,
                 step_index=step_index,
                 intent_id=plan.current_intent.id if plan.current_intent else None,
-                thought=action.thought,
+                thought=credential_vault.sanitize_secrets(action.thought),
                 tool_name=tool_name,
-                tool_args=action.args,
-                observation_summary=obs_summary,
-                observation_data=obs_data,
+                tool_args=credential_vault.sanitize_secrets(action.args),
+                observation_summary=credential_vault.sanitize_secrets(obs_summary),
+                observation_data=credential_vault.sanitize_secrets(obs_data),
                 ok=tool_res.ok,
-                error=tool_res.error,
+                error=credential_vault.sanitize_secrets(tool_res.error),
                 evidence_refs=tool_res.evidence_refs,
                 duration_ms=duration_ms,
                 tokens=tokens_for_step,
                 policy_decision=policy_decision.effect.value,
-                policy_reason=policy_decision.reason,
+                policy_reason=credential_vault.sanitize_secrets(policy_decision.reason),
             )
             self._record_and_notify_step(run_id, step_record)
 

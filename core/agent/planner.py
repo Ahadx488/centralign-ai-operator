@@ -19,6 +19,7 @@ Rules for Intents:
 2. Each intent must state a clear expected outcome that can be verified.
 3. Keep the plan lean: 3 to 5 intents total.
 4. Adapt to the available tools and company procedures provided.
+5. When entering invoices into ERP, include an explicit milestone to check for duplicates in the ERP bills register before creating a new bill.
 """
 
 REPLAN_SYSTEM_PROMPT = """You are CentrAlign's Living Planner performing a RE-PLAN.

@@ -92,39 +92,9 @@ async def run_cli(
             print("⚡ Injected fault: missing_portal_invoice")
 
     # 4. Resolve LLM client and task
-    llm: Any = None
     if llm_mode == "mock":
-        if "PYTEST_CURRENT_TEST" in os.environ:
-            from core.agent.models import AgentAction, Goal, Intent
-            from core.agent.planner import InitialPlanOutput
-            from core.llm.fake import FakeLLM
-            from core.llm.models import LLMResponse
-
-            llm = FakeLLM()
-            llm.queue_response(LLMResponse(parsed=Goal(outcome="Mock task execution"), provider="fake"))
-            llm.queue_response(LLMResponse(parsed=InitialPlanOutput(intents=[Intent(id="i1", description="intent 1", expected_outcome="done")]), provider="fake"))
-            sc_val = int(scenario) if scenario and str(scenario).isdigit() else scenario
-            if sc_val == 3:
-                llm.queue_response(LLMResponse(parsed=AgentAction(thought="Clarify ambiguous vendor", tool="ask_user", args={"question": "Which vendor?", "options": ["Vendor A", "Vendor B"]})))
-                llm.queue_response(LLMResponse(parsed=AgentAction(thought="Finished with clarification", is_finish=True, finish_summary="Target vendor confirmed.")))
-            elif sc_val == 4:
-                llm.queue_response(LLMResponse(parsed=AgentAction(thought="Navigating to ERP", tool="browser_open_url", args={"url": f"{base_url}/erp/login"})))
-                llm.queue_response(LLMResponse(parsed=AgentAction(thought="Entering credentials", tool="browser_type_text", args={"target": "#username", "text": "admin"})))
-                llm.queue_response(LLMResponse(parsed=AgentAction(thought="Entering password", tool="browser_type_text", args={"target": "#password", "text": "erp_pass123"})))
-                llm.queue_response(LLMResponse(parsed=AgentAction(thought="Signing in", tool="browser_click", args={"target": "#erp-submit-btn"})))
-                llm.queue_response(LLMResponse(parsed=AgentAction(thought="Opening new bill", tool="browser_open_url", args={"url": f"{base_url}/erp/bills/new"})))
-                llm.queue_response(LLMResponse(parsed=AgentAction(thought="Entering vendor", tool="browser_type_text", args={"target": "vendor_name", "text": "Acme Corp Ltd"})))
-                llm.queue_response(LLMResponse(parsed=AgentAction(thought="Entering invoice", tool="browser_type_text", args={"target": "invoice_number", "text": "INV-ACME-101"})))
-                llm.queue_response(LLMResponse(parsed=AgentAction(thought="Entering amount", tool="browser_type_text", args={"target": "amount", "text": "34500.00"})))
-                llm.queue_response(LLMResponse(parsed=AgentAction(thought="Entering due date", tool="browser_type_text", args={"target": "due_date", "text": "2026-10-25"})))
-                llm.queue_response(LLMResponse(parsed=AgentAction(thought="Submitting bill", tool="browser_click", args={"target": "Submit Bill"})))
-                llm.queue_response(LLMResponse(parsed=AgentAction(thought="Preventing duplicate", is_finish=True, finish_summary="Duplicate detected; stopped.")))
-            else:
-                llm.queue_response(LLMResponse(parsed=AgentAction(thought="Finishing task", is_finish=True, finish_summary="Completed successfully.")))
-        else:
-            raise RuntimeError("FakeLLM may exist only in tests/ for unit-testing plumbing, never in CLI or demos.")
-    else:
-        llm = get_llm_client()
+        raise RuntimeError("FakeLLM may exist only in tests/ for unit-testing plumbing, never in CLI, demos, or evals.")
+    llm = get_llm_client()
 
     task_prompt: str = ""
 

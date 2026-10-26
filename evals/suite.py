@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import time
 from pathlib import Path
 from typing import Any
@@ -313,6 +314,28 @@ async def execute_eval_task(task_var: EvalTaskVariant) -> EvalTaskResult:
             else:
                 approval_ok = False
                 run_rec = init_run
+
+        elif task_var.test_learning:
+            # 1. Clear previous lessons for this pattern so Run 1 starts clean
+            with sqlite3.connect(RUNS_DB_PATH) as l_conn:
+                l_conn.execute("DELETE FROM lessons WHERE trigger_pattern LIKE '%globex%'")
+
+            # 2. Run 1: Task with missing portal invoice obstacle
+            await set_server_faults({"missing_portal_invoice": True})
+            print("\n  [Continuous Learning] Running Trial 1 (Unoptimized / Encountering missing portal invoice)...")
+            run_rec_1 = await executor.run(task_var.task)
+            steps_1 = run_rec_1.step_count
+            print(f"  [Continuous Learning] Trial 1 Completed in {steps_1} steps. (Status: {run_rec_1.status.value})")
+
+            # 3. Reset database environment for Trial 2 so invoice can be entered cleanly
+            await reset_server_environment()
+
+            # 4. Run 2: Same task executed with learned lesson retrieved
+            print("  [Continuous Learning] Running Trial 2 (With Retrieved Lessons applied)...")
+            run_rec = await executor.run(task_var.task)
+            steps_2 = run_rec.step_count
+            print(f"  [Continuous Learning] Trial 2 Completed in {steps_2} steps. (Status: {run_rec.status.value})")
+            print(f"  [Continuous Learning Scorecard] Step comparison: Run 1={steps_1} steps vs Run 2={steps_2} steps")
 
         else:
             run_rec = await executor.run(task_var.task)
