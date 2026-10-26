@@ -4,6 +4,7 @@ import logging
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -187,3 +188,86 @@ class LessonStore:
         for les in lessons:
             lines.append(f"- **[{les.category.upper()}]** {les.learned_solution} (Confidence: {les.confidence:.2f})")
         return "\n".join(lines) + "\n"
+
+    async def extract_and_record_lessons(
+        self,
+        llm: Any,
+        run_id: str,
+        goal_outcome: str,
+        steps: list[Any],
+    ) -> list[Lesson]:
+        """
+        Call LLM over the step log of a completed run to dynamically extract generic operational lessons.
+        Enforces Requirement 4: zero hardcoded lessons.
+        """
+        if not steps or not llm:
+            return []
+
+        # Only prompt if run encountered obstacles, errors, retries, or recoveries
+        has_obstacles = any(
+            not getattr(s, "ok", True)
+            or "fail" in str(getattr(s, "observation_summary", "")).lower()
+            or "error" in str(getattr(s, "observation_summary", "")).lower()
+            for s in steps
+        ) or len(steps) >= 3
+
+        if not has_obstacles:
+            return []
+
+        from core.llm.models import LLMMessage
+
+        log_lines = []
+        for s in steps:
+            status = "OK" if getattr(s, "ok", True) else f"ERROR: {getattr(s, 'error', '')}"
+            log_lines.append(
+                f"Step {getattr(s, 'step_index', 0)} | Tool: {getattr(s, 'tool_name', '')}({getattr(s, 'tool_args', '')}) | Result: {status} | Obs: {getattr(s, 'observation_summary', '')}"
+            )
+
+        prompt = f"""You are CentrAlign's Continuous Learning Engine.
+Analyze the following completed execution log to extract any operational lessons learned from errors, retries, source switches, UI drift, or format adjustments.
+
+Task Goal: {goal_outcome}
+
+Execution Step Log:
+{chr(10).join(log_lines)}
+
+Instructions:
+- If the agent encountered an error and resolved it (e.g. element renamed, auth expired, document not in primary location, date format rejected), produce a generic, reusable operational Lesson.
+- Do NOT generate trivial lessons if the run proceeded without any obstacles or insights.
+- The trigger_pattern should be concise keywords likely to appear in similar future tasks.
+"""
+        try:
+            resp = await llm.generate_async(
+                messages=[LLMMessage(role="user", content=prompt)],
+                response_model=RunLessonExtraction,
+                temperature=0.0,
+            )
+            parsed: RunLessonExtraction = resp.parsed
+            recorded = []
+            if parsed and parsed.lessons:
+                for les in parsed.lessons:
+                    saved = self.record_lesson(
+                        trigger_pattern=les.trigger_pattern,
+                        category=les.category,
+                        learned_solution=les.learned_solution,
+                        evidence_run_id=run_id,
+                        confidence=les.confidence,
+                    )
+                    recorded.append(saved)
+                logger.info(f"[Continuous Learning] Extracted & recorded {len(recorded)} lesson(s) from run {run_id}")
+            return recorded
+        except Exception as e:
+            logger.warning(f"[Continuous Learning] Lesson extraction failed: {e}")
+            return []
+
+
+class ExtractedLesson(BaseModel):
+    trigger_pattern: str = Field(description="Search keywords/phrases when this lesson applies (e.g. system name, entity name, error symptom)")
+    category: str = Field(description="ui_drift, auth, source_location, field_format, policy, error_recovery")
+    learned_solution: str = Field(description="Clear operational advice for future runs to avoid errors and finish faster")
+    confidence: float = Field(default=0.9, ge=0.0, le=1.0)
+
+
+class RunLessonExtraction(BaseModel):
+    analysis: str = Field(description="Brief analysis of whether the run encountered obstacles or learned new operational knowledge")
+    lessons: list[ExtractedLesson] = Field(default_factory=list, description="Zero or more extracted lessons")

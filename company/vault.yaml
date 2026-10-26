@@ -1,0 +1,12 @@
+erp_credentials:
+  username: "admin"
+  password: "erp_pass123"
+
+vendor_portal_credentials:
+  username: "supplier@acme.com"
+  email: "supplier@acme.com"
+  password: "portal_pass123"
+
+tickets_credentials:
+  username: "operator"
+  password: "tickets_pass123"

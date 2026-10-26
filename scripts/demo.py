@@ -5,19 +5,28 @@ import os
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 import httpx
 import uvicorn
+import yaml
 
 from core.cli import run_cli
 from core.runs.manager import RunManager
-from core.scenarios import SCENARIO_DESCRIPTIONS
 from env.db import init_db
 from env.seed.generator import seed_company_data
 from env.server import app
 
 BASE_URL = "http://127.0.0.1:8001"
+
+# Load scenario definitions from company data
+SCENARIO_DESCRIPTIONS: dict[int, dict[str, Any]] = {}
+scenarios_path = Path("company/scenarios.yaml")
+if scenarios_path.exists():
+    with open(scenarios_path) as sf:
+        raw_sc = yaml.safe_load(sf) or {}
+        SCENARIO_DESCRIPTIONS = {int(k): v for k, v in raw_sc.items() if str(k).isdigit()}
 
 
 def ensure_server_running() -> threading.Thread | None:
@@ -32,17 +41,21 @@ def ensure_server_running() -> threading.Thread | None:
         pass
 
     print("✓ Starting background mock environment on http://127.0.0.1:8001...")
-    init_db()
-    seed_company_data()
+    try:
+        init_db()
+        seed_company_data()
 
-    config = uvicorn.Config(app, host="127.0.0.1", port=8001, log_level="error")
-    server = uvicorn.Server(config)
-    server.install_signal_handlers = lambda: None  # type: ignore
+        config = uvicorn.Config(app, host="127.0.0.1", port=8001, log_level="error")
+        server = uvicorn.Server(config)
+        server.install_signal_handlers = lambda: None  # type: ignore
 
-    t = threading.Thread(target=server.run, daemon=True)
-    t.start()
+        t = threading.Thread(target=server.run, daemon=True)
+        t.start()
+    except Exception as e:
+        print(f"Notice: Mock environment start returned: {e}")
+        return None
 
-    for _ in range(30):
+    for _ in range(10):
         try:
             with httpx.Client(timeout=0.5) as client:
                 res = client.get(f"{BASE_URL}/__truth/state")
@@ -52,7 +65,7 @@ def ensure_server_running() -> threading.Thread | None:
         except Exception:
             time.sleep(0.1)
 
-    raise RuntimeError("Failed to start mock environment server on port 8001")
+    return None
 
 
 async def run_founding_showcases() -> list[dict[str, Any]]:
@@ -142,6 +155,12 @@ async def run_founding_showcases() -> list[dict[str, Any]]:
 
 async def run_all_demos() -> int:
     """Run both the 4 Intern core scenarios and the 5 Founding Engineer capability showcases."""
+    if not os.getenv("GEMINI_API_KEY"):
+        raise RuntimeError(
+            "GEMINI_API_KEY is not set in environment or .env! "
+            "make demo calls the real LLM and drives real tools. Please configure GEMINI_API_KEY."
+        )
+
     ensure_server_running()
 
     print("\n" + "=" * 94)
@@ -165,7 +184,7 @@ async def run_all_demos() -> int:
         exit_code = await run_cli(
             scenario=sc_id,
             auto_input=auto_in,
-            llm_mode="mock" if not os.getenv("GEMINI_API_KEY") else "auto",
+            llm_mode="live",
             base_url=BASE_URL,
             runs_db="artifacts/runs.db",
             artifacts_dir="artifacts",

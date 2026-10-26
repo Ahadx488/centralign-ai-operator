@@ -9,9 +9,12 @@ import time
 from typing import Any, TypeVar
 
 import httpx
+from dotenv import load_dotenv
 from pydantic import BaseModel
 
-from core.llm.models import LLMMessage, LLMResponse, TokenUsage, ToolCall, ToolDefinition
+load_dotenv()
+
+from core.llm.models import LLMMessage, LLMResponse, TokenUsage, ToolCall, ToolDefinition  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +27,10 @@ class LLMError(Exception):
 
 class LLMRetryableError(LLMError):
     """Error that is safe to retry (e.g. rate limit, 503, transient network)."""
+
+    def __init__(self, message: str, retry_after: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 def pydantic_to_gemini_schema(
@@ -94,7 +101,72 @@ def pydantic_to_gemini_schema(
             out["properties"] = {}
             for prop_name, prop_val in node["properties"].items():
                 if isinstance(prop_val, dict):
-                    out["properties"][prop_name] = transform_node(prop_val)
+                    transformed = transform_node(prop_val)
+                    if prop_name == "tool":
+                        transformed["enum"] = [
+                            "browser_open_url",
+                            "browser_snapshot",
+                            "browser_click",
+                            "browser_type_text",
+                            "browser_select_option",
+                            "browser_press_key",
+                            "browser_wait_for",
+                            "browser_screenshot",
+                            "browser_extract_text",
+                            "browser_download_file",
+                            "browser_upload_file",
+                            "browser_get_tabs",
+                            "files_list_dir",
+                            "files_read_file",
+                            "files_write_file",
+                            "files_search_files",
+                            "http_request",
+                            "mail_search",
+                            "mail_read",
+                            "mail_save_attachment",
+                            "mail_send",
+                            "ask_user",
+                            "request_approval",
+                        ]
+                    out["properties"][prop_name] = transformed
+        elif out.get("type") == "OBJECT":
+            # For open-ended dictionaries (e.g. tool args dict[str, Any]), populate tool parameters
+            out["properties"] = {
+                "url": {"type": "STRING", "description": "Target URL to open or request"},
+                "target": {"type": "STRING", "description": "Element selector, ref ID, or visible text"},
+                "text": {"type": "STRING", "description": "Text to type into input field"},
+                "clear": {"type": "BOOLEAN", "description": "Whether to clear existing text before typing"},
+                "value": {"type": "STRING", "description": "Option value to select"},
+                "key": {"type": "STRING", "description": "Keyboard key to press (e.g. Enter, Tab)"},
+                "timeout_ms": {"type": "INTEGER", "description": "Timeout in milliseconds"},
+                "name": {"type": "STRING", "description": "Label or name"},
+                "path": {"type": "STRING", "description": "File or directory path"},
+                "file_path": {"type": "STRING", "description": "File path to read, write, or upload"},
+                "save_dir": {"type": "STRING", "description": "Directory to save downloaded file"},
+                "pattern": {"type": "STRING", "description": "Glob search pattern (e.g. *.pdf)"},
+                "base_dir": {"type": "STRING", "description": "Base directory for file search"},
+                "method": {"type": "STRING", "description": "HTTP method: GET, POST, PUT, DELETE"},
+                "headers": {"type": "OBJECT", "description": "Optional HTTP headers"},
+                "json_data": {"type": "OBJECT", "description": "Optional JSON payload"},
+                "form_data": {"type": "OBJECT", "description": "Optional form data"},
+                "query": {"type": "STRING", "description": "Search query keyword"},
+                "email_id": {"type": "INTEGER", "description": "ID of email to read or save attachment from"},
+                "filename": {"type": "STRING", "description": "Filename of attachment or document"},
+                "attachment_filename": {"type": "STRING", "description": "Filename of email attachment"},
+                "recipient": {"type": "STRING", "description": "Email recipient"},
+                "subject": {"type": "STRING", "description": "Email subject"},
+                "body": {"type": "STRING", "description": "Email body content"},
+                "question": {"type": "STRING", "description": "Question to ask user for clarification"},
+                "options": {"type": "ARRAY", "items": {"type": "STRING"}, "description": "Clarification choices"},
+                "action": {"type": "STRING", "description": "Action requiring approval"},
+                "reason": {"type": "STRING", "description": "Reason approval is required"},
+                "risk_tier": {"type": "STRING", "description": "Risk tier"},
+                "vendor_name": {"type": "STRING", "description": "Vendor name"},
+                "invoice_number": {"type": "STRING", "description": "Invoice number"},
+                "amount": {"type": "STRING", "description": "Amount"},
+                "due_date": {"type": "STRING", "description": "Payment due date YYYY-MM-DD"},
+                "currency": {"type": "STRING", "description": "Currency code"},
+            }
 
         # Handle items (for ARRAY)
         if "items" in node and isinstance(node["items"], dict):
@@ -102,6 +174,9 @@ def pydantic_to_gemini_schema(
 
         if "type" not in out and "properties" in out:
             out["type"] = "OBJECT"
+
+        if "thought" in out.get("properties", {}) and "args" in out.get("properties", {}):
+            out["required"] = ["thought", "tool", "args", "is_finish"]
 
         return out
 
@@ -118,7 +193,7 @@ class LLMClient(abc.ABC):
         self,
         model: str,
         api_key: str | None = None,
-        max_retries: int = 3,
+        max_retries: int = 6,
         initial_backoff_sec: float = 1.0,
         backoff_multiplier: float = 2.0,
         timeout_sec: float = 60.0,
@@ -188,15 +263,16 @@ class LLMClient(abc.ABC):
 
             except LLMRetryableError as e:
                 last_error = e
+                sleep_time = e.retry_after if e.retry_after is not None else backoff
                 logger.warning(
                     "Attempt %d/%d failed with retryable error: %s. Retrying in %.3fs...",
                     attempt,
                     self.max_retries,
                     e,
-                    backoff,
+                    sleep_time,
                 )
                 if attempt < self.max_retries:
-                    time.sleep(backoff)
+                    time.sleep(sleep_time)
                     backoff *= self.backoff_multiplier
             except Exception as e:
                 logger.error(f"LLM call failed with non-retryable error: {e}")
@@ -239,10 +315,11 @@ class GeminiLLMClient(LLMClient):
 
     def __init__(
         self,
-        model: str = "gemini-2.5-flash",
+        model: str | None = None,
         api_key: str | None = None,
         **kwargs: Any,
     ):
+        model = model or os.getenv("LLM_MODEL") or "gemini-3.5-flash-lite"
         api_key = api_key or os.getenv("GEMINI_API_KEY")
         super().__init__(model=model, api_key=api_key, **kwargs)
         self.base_url = "https://generativelanguage.googleapis.com/v1beta/models"
@@ -400,7 +477,22 @@ class GeminiLLMClient(LLMClient):
             raise LLMRetryableError(f"Network error communicating with Gemini API: {e}") from e
 
         if res.status_code in (429, 500, 502, 503, 504):
-            raise LLMRetryableError(f"Gemini API returned status {res.status_code}: {res.text}")
+            retry_after: float | None = None
+            if res.status_code == 429:
+                try:
+                    err_json = res.json()
+                    for detail in err_json.get("error", {}).get("details", []):
+                        if "retryDelay" in detail:
+                            delay_str = str(detail["retryDelay"])
+                            retry_after = float(delay_str.rstrip("s")) + 1.0
+                except Exception:
+                    pass
+                if retry_after is None:
+                    retry_after = 20.0
+            raise LLMRetryableError(
+                f"Gemini API returned status {res.status_code}: {res.text}",
+                retry_after=retry_after,
+            )
         if res.status_code != 200:
             raise LLMError(f"Gemini API error ({res.status_code}): {res.text}")
 
@@ -570,15 +662,41 @@ def get_llm_client(
     **kwargs: Any,
 ) -> LLMClient:
     """Factory function to get an LLM client instance."""
-    provider = provider or os.getenv("LLM_PROVIDER", "fake").lower()
+    if provider is None:
+        env_provider = os.getenv("LLM_PROVIDER")
+        if env_provider:
+            provider = env_provider.lower()
+        elif os.getenv("GEMINI_API_KEY"):
+            provider = "gemini"
+        elif os.getenv("OPENAI_API_KEY"):
+            provider = "openai"
+        elif "PYTEST_CURRENT_TEST" in os.environ:
+            provider = "fake"
+        else:
+            raise RuntimeError(
+                "No LLM API key configured. GEMINI_API_KEY is required in .env for live autonomy. "
+                "FakeLLM may exist only in tests/ for unit-testing plumbing, never in demos or evals."
+            )
+
+    provider = provider.lower()
 
     if provider == "gemini":
-        resolved_model = model or os.getenv("LLM_MODEL") or "gemini-2.5-flash"
-        return GeminiLLMClient(model=resolved_model, api_key=api_key, **kwargs)
+        resolved_key = api_key or os.getenv("GEMINI_API_KEY")
+        if not resolved_key:
+            raise RuntimeError("GEMINI_API_KEY is required for GeminiLLMClient. Check your .env file.")
+        resolved_model = model or os.getenv("LLM_MODEL") or "gemini-3.5-flash-lite"
+        return GeminiLLMClient(model=resolved_model, api_key=resolved_key, **kwargs)
     elif provider == "openai":
+        resolved_key = api_key or os.getenv("OPENAI_API_KEY")
+        if not resolved_key:
+            raise RuntimeError("OPENAI_API_KEY is required for OpenAILLMClient. Check your .env file.")
         resolved_model = model or os.getenv("LLM_MODEL") or "gpt-4o-mini"
-        return OpenAILLMClient(model=resolved_model, api_key=api_key, **kwargs)
+        return OpenAILLMClient(model=resolved_model, api_key=resolved_key, **kwargs)
     elif provider == "fake":
+        if "PYTEST_CURRENT_TEST" not in os.environ and not kwargs.get("allow_fake_for_testing", False):
+            raise RuntimeError(
+                "FakeLLM may exist only in tests/ for unit-testing plumbing, never in demos, evals, or CLI execution."
+            )
         from core.llm.fake import FakeLLM
 
         return FakeLLM(model=model or "fake-model", **kwargs)

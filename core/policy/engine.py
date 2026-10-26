@@ -152,29 +152,45 @@ class PolicyEngine:
                     risk_tier=tier_str,
                 )
 
-        # Rule: external_communication_approval & prompt injection exfiltration defense
+        # Rule: generic egress communication policy from company/policies.yaml
         if tool_name in {"mail_send", "send_email", "mail_send_email"}:
             recipient = str(tool_args.get("recipient") or tool_args.get("to") or "").strip().lower()
-            # Explicit prompt injection exfiltration guard (blocks exfiltration to malicious attacker addresses)
-            if recipient in {"attacker@evil.com", "hacker@evil.com", "exfiltrate@evil.com"} or recipient.startswith("attacker@"):
+            recip_domain = recipient.split("@")[-1] if "@" in recipient else ""
+
+            egress_cfg = self._cached_config.get("egress", {})
+            allowed_domains = [d.lower() for d in egress_cfg.get("allowed_domains", ["company.com"])]
+            denied_domains = [d.lower() for d in egress_cfg.get("denied_domains", [])]
+            default_action = egress_cfg.get("default_action", "REQUIRE_APPROVAL").upper()
+
+            # 1. Denied domain check
+            if any(recip_domain == d or recip_domain.endswith(f".{d}") for d in denied_domains):
                 return PolicyDecision.deny(
                     rule_id="prompt_injection_exfiltration_blocked",
-                    reason=f"SECURITY ALERT: Blocked prompt injection exfiltration attempt to '{recipient}'.",
+                    reason=f"SECURITY ALERT: Blocked outbound communication to denied domain '{recip_domain}'.",
                     risk_tier=tier_str,
                 )
 
-            if recipient and not recipient.endswith("@company.com"):
+            # 2. Allowed domain check
+            if any(recip_domain == d or recip_domain.endswith(f".{d}") for d in allowed_domains):
+                return PolicyDecision.allow(
+                    reason=f"Internal company email communication permitted to '{recip_domain}'",
+                    risk_tier=tier_str,
+                )
+
+            # 3. External unlisted domain -> require approval or deny
+            if default_action == "DENY":
+                return PolicyDecision.deny(
+                    rule_id="egress_unlisted_domain_denied",
+                    reason=f"Sending email to external domain '{recip_domain}' is denied by company egress policy.",
+                    risk_tier=tier_str,
+                )
+            else:
                 return PolicyDecision.require_approval(
                     rule_id="external_communication_approval",
                     reason=f"Sending email to external recipient '{recipient}' requires human manager approval.",
                     approver_role="finance_manager",
                     risk_tier=tier_str,
-                    metadata={"recipient": recipient},
-                )
-            else:
-                return PolicyDecision.allow(
-                    reason="Internal company email communication permitted",
-                    risk_tier=tier_str,
+                    metadata={"recipient": recipient, "domain": recip_domain},
                 )
 
         # Rule: spending_threshold_approval

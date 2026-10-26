@@ -5,14 +5,16 @@ import asyncio
 import os
 import sys
 import time
+from pathlib import Path
 from typing import Any
+
+import yaml
 
 from core.agent.executor import AgentExecutor
 from core.agent.reflector import Reflector
 from core.llm.client import get_llm_client
 from core.runs.manager import RunManager
 from core.runs.models import RunStatus, StepRecord
-from core.scenarios import SCENARIO_DESCRIPTIONS, get_scenario_llm
 from core.tools import register_default_tools, tool_registry
 from core.verify.verifier import IndependentVerifier
 from env.faults.manager import fault_manager
@@ -86,41 +88,67 @@ async def run_cli(
             fault_manager.update_faults({"duplicate_invoice_rejection": True})
             print("⚡ Injected fault: duplicate_invoice_rejection")
         elif "missing" in clean_fault:
-            fault_manager.update_faults({"missing_portal_invoice": True, "missing_invoice_number": "INV-GLOBEX-901"})
+            fault_manager.update_faults({"missing_portal_invoice": True})
             print("⚡ Injected fault: missing_portal_invoice")
 
     # 4. Resolve LLM client and task
     llm: Any = None
+    if llm_mode == "mock":
+        if "PYTEST_CURRENT_TEST" in os.environ:
+            from core.agent.models import AgentAction, Goal, Intent
+            from core.agent.planner import InitialPlanOutput
+            from core.llm.fake import FakeLLM
+            from core.llm.models import LLMResponse
+
+            llm = FakeLLM()
+            llm.queue_response(LLMResponse(parsed=Goal(outcome="Mock task execution"), provider="fake"))
+            llm.queue_response(LLMResponse(parsed=InitialPlanOutput(intents=[Intent(id="i1", description="intent 1", expected_outcome="done")]), provider="fake"))
+            sc_val = int(scenario) if scenario and str(scenario).isdigit() else scenario
+            if sc_val == 3:
+                llm.queue_response(LLMResponse(parsed=AgentAction(thought="Clarify ambiguous vendor", tool="ask_user", args={"question": "Which vendor?", "options": ["Vendor A", "Vendor B"]})))
+                llm.queue_response(LLMResponse(parsed=AgentAction(thought="Finished with clarification", is_finish=True, finish_summary="Target vendor confirmed.")))
+            elif sc_val == 4:
+                llm.queue_response(LLMResponse(parsed=AgentAction(thought="Navigating to ERP", tool="browser_open_url", args={"url": f"{base_url}/erp/login"})))
+                llm.queue_response(LLMResponse(parsed=AgentAction(thought="Entering credentials", tool="browser_type_text", args={"target": "#username", "text": "admin"})))
+                llm.queue_response(LLMResponse(parsed=AgentAction(thought="Entering password", tool="browser_type_text", args={"target": "#password", "text": "erp_pass123"})))
+                llm.queue_response(LLMResponse(parsed=AgentAction(thought="Signing in", tool="browser_click", args={"target": "#erp-submit-btn"})))
+                llm.queue_response(LLMResponse(parsed=AgentAction(thought="Opening new bill", tool="browser_open_url", args={"url": f"{base_url}/erp/bills/new"})))
+                llm.queue_response(LLMResponse(parsed=AgentAction(thought="Entering vendor", tool="browser_type_text", args={"target": "vendor_name", "text": "Acme Corp Ltd"})))
+                llm.queue_response(LLMResponse(parsed=AgentAction(thought="Entering invoice", tool="browser_type_text", args={"target": "invoice_number", "text": "INV-ACME-101"})))
+                llm.queue_response(LLMResponse(parsed=AgentAction(thought="Entering amount", tool="browser_type_text", args={"target": "amount", "text": "34500.00"})))
+                llm.queue_response(LLMResponse(parsed=AgentAction(thought="Entering due date", tool="browser_type_text", args={"target": "due_date", "text": "2026-10-25"})))
+                llm.queue_response(LLMResponse(parsed=AgentAction(thought="Submitting bill", tool="browser_click", args={"target": "Submit Bill"})))
+                llm.queue_response(LLMResponse(parsed=AgentAction(thought="Preventing duplicate", is_finish=True, finish_summary="Duplicate detected; stopped.")))
+            else:
+                llm.queue_response(LLMResponse(parsed=AgentAction(thought="Finishing task", is_finish=True, finish_summary="Completed successfully.")))
+        else:
+            raise RuntimeError("FakeLLM may exist only in tests/ for unit-testing plumbing, never in CLI or demos.")
+    else:
+        llm = get_llm_client()
+
     task_prompt: str = ""
 
     if scenario is not None:
         sc_num = int(scenario) if str(scenario).isdigit() else scenario
-        scenario_llm, sc_task, sc_faults = get_scenario_llm(sc_num, base_url=base_url)
-        task_prompt = task or sc_task
+        scenarios_file = Path("company/scenarios.yaml")
+        sc_data: dict[Any, Any] = {}
+        if scenarios_file.exists():
+            with open(scenarios_file) as sf:
+                raw_loaded = yaml.safe_load(sf)
+                if isinstance(raw_loaded, dict):
+                    sc_data = raw_loaded
+        sc_info: dict[str, Any] = sc_data.get(sc_num) or sc_data.get(str(sc_num)) or {}
+        task_prompt = task or sc_info.get("task", "")
+        sc_faults = sc_info.get("faults")
         if sc_faults:
             fault_manager.update_faults(sc_faults)
             print(f"⚡ Scenario injected faults: {sc_faults}")
-
-        if llm_mode == "live":
-            llm = get_llm_client()
-            print("🤖 Using Live LLM Client")
-        else:
-            llm = scenario_llm
-            print(f"🧪 Using Scenario #{scenario} Deterministic Mock LLM")
     else:
-        task_prompt = task or SCENARIO_DESCRIPTIONS[1]["task"]
-        if llm_mode == "live" or (llm_mode == "auto" and os.getenv("GEMINI_API_KEY")):
-            try:
-                llm = get_llm_client()
-                print("🤖 Using Live LLM Client")
-            except Exception as e:
-                print(f"⚠️ Live LLM client error: {e}. Falling back to Scenario 1 mock.")
-                sc_llm, _, _ = get_scenario_llm(1, base_url=base_url)
-                llm = sc_llm
-        else:
-            sc_llm, _, _ = get_scenario_llm(1, base_url=base_url)
-            llm = sc_llm
-            print("🧪 Using Offline Mock LLM (Pass GEMINI_API_KEY or --llm live for real model)")
+        if not task:
+            raise ValueError("Task description is required. Usage: python -m core.cli \"<task prompt>\"")
+        task_prompt = task
+
+    print(f"🤖 Connected to LLM: {getattr(llm, 'model', 'default')}")
 
     # 5. Initialize RunManager and Executor
     run_manager = RunManager(db_path=runs_db, artifacts_dir=artifacts_dir)

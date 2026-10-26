@@ -14,7 +14,7 @@ class AskUserArgs(BaseModel):
     question: str = Field(description="The specific blocking question to ask the user")
     options: list[str] | None = Field(
         default=None,
-        description="Optional list of choices for the user (e.g. ['Acme Corp Ltd', 'Acme Corp Inc'])",
+        description="Optional list of selectable choices for the user",
     )
 
 

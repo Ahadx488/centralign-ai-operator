@@ -6,20 +6,211 @@ from pathlib import Path
 import pytest
 
 from core.agent.executor import AgentExecutor
+from core.agent.models import AgentAction, Goal, Intent
+from core.agent.planner import InitialPlanOutput
 from core.agent.reflector import Reflector
+from core.llm.fake import FakeLLM
+from core.llm.models import LLMResponse
 from core.runs.manager import RunManager
 from core.runs.models import RunStatus
-from core.scenarios import (
-    create_generalization_task_1_llm,
-    create_generalization_task_2_llm,
-    create_generalization_task_3_llm,
-)
 from core.tools import register_default_tools
 from core.tools.connectors import ConnectorRegistry
 from core.tools.registry import ToolRegistry
 from env.db import init_db
 from env.seed.generator import seed_company_data
 from tests.conftest import BASE_URL
+
+
+def create_generalization_task_1_llm(base_url: str = "http://127.0.0.1:8001") -> FakeLLM:
+    """Generalization Task 1: Close all tickets assigned to me that were resolved last week and email summary to manager."""
+    llm = FakeLLM()
+    llm.queue_response(
+        LLMResponse(
+            parsed=Goal(
+                outcome="Close all resolved service tickets assigned to me and email closure summary to manager.",
+                success_criteria=[
+                    "Service desk tickets TICK-102 and TICK-103 closed",
+                    "Summary email dispatched to manager via corporate mailbox",
+                ],
+                is_blocking=False,
+            ),
+            provider="fake",
+        )
+    )
+    llm.queue_response(
+        LLMResponse(
+            parsed=InitialPlanOutput(
+                intents=[
+                    Intent(id="intent_1", description="Log in to service desk and list resolved tickets", expected_outcome="Tickets identified"),
+                    Intent(id="intent_2", description="Update status of resolved tickets to closed", expected_outcome="Tickets closed"),
+                    Intent(id="intent_3", description="Send summary email to manager", expected_outcome="Email sent"),
+                ]
+            ),
+            provider="fake",
+        )
+    )
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Navigating to tickets login", tool="browser_open_url", args={"url": f"{base_url}/tickets/login"})))
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Entering username", tool="browser_type_text", args={"target": "#username", "text": "operator"})))
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Entering password", tool="browser_type_text", args={"target": "#password", "text": "tickets_pass123"})))
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Submitting login", tool="browser_click", args={"target": "#tickets-submit-btn"})))
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Navigating to TICK-102", tool="browser_open_url", args={"url": f"{base_url}/tickets/TICK-102"})))
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Closing TICK-102", tool="browser_select_option", args={"target": "#status", "value": "closed"})))
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Submitting update", tool="browser_click", args={"target": "#save-ticket-btn"})))
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Navigating to TICK-103", tool="browser_open_url", args={"url": f"{base_url}/tickets/TICK-103"})))
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Closing TICK-103", tool="browser_select_option", args={"target": "#status", "value": "closed"})))
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Submitting update", tool="browser_click", args={"target": "#save-ticket-btn"})))
+    llm.queue_response(
+        LLMResponse(
+            parsed=AgentAction(
+                thought="Sending summary email to manager Sneha Patel",
+                tool="mail_send",
+                args={
+                    "recipient": "sneha.patel@company.com",
+                    "subject": "Weekly Resolved Tickets Closure Summary",
+                    "body": "Dear Sneha,\n\nAll resolved tickets assigned for last week have been reviewed and closed:\n- TICK-102: Reset vendor portal password for Globex (closed)\n- TICK-103: Upgrade database storage (closed)\n\nRegards,\nTechnical Operator",
+                },
+            )
+        )
+    )
+    llm.queue_response(
+        LLMResponse(
+            parsed=AgentAction(
+                thought="Finished ticket triage and dispatching report.",
+                is_finish=True,
+                finish_summary="Successfully closed resolved tickets TICK-102 and TICK-103 and emailed summary report to manager Sneha Patel.",
+            )
+        )
+    )
+    return llm
+
+
+def create_generalization_task_2_llm(base_url: str = "http://127.0.0.1:8001") -> FakeLLM:
+    """Generalization Task 2: Reconcile vendor statement CSV in file share against bills in ERP and list mismatches."""
+    llm = FakeLLM()
+    llm.queue_response(
+        LLMResponse(
+            parsed=Goal(
+                outcome="Reconcile vendor statement CSV in the file share against bills in the ERP and report mismatches.",
+                success_criteria=[
+                    "Vendor statement CSV parsed from file share",
+                    "Bills in ERP cross-referenced against statement items",
+                    "Mismatches and missing records identified",
+                ],
+                is_blocking=False,
+            ),
+            provider="fake",
+        )
+    )
+    llm.queue_response(
+        LLMResponse(
+            parsed=InitialPlanOutput(
+                intents=[
+                    Intent(id="intent_1", description="Read vendor statement CSV from file share", expected_outcome="Statement rows loaded"),
+                    Intent(id="intent_2", description="Query Acme ERP bills", expected_outcome="ERP ledger loaded"),
+                    Intent(id="intent_3", description="Compare records and compile mismatch list", expected_outcome="Mismatches identified"),
+                ]
+            ),
+            provider="fake",
+        )
+    )
+    llm.queue_response(
+        LLMResponse(
+            parsed=AgentAction(
+                thought="Reading vendor statement CSV from file share",
+                tool="files_read_file",
+                args={"path": "./env/fileshare/data/AcmeCorp_Oct2026_statement.csv"},
+            )
+        )
+    )
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Navigating to Acme ERP login", tool="browser_open_url", args={"url": f"{base_url}/erp/login"})))
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Entering username", tool="browser_type_text", args={"target": "#username", "text": "admin"})))
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Entering password", tool="browser_type_text", args={"target": "#password", "text": "erp_pass123"})))
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Logging into ERP", tool="browser_click", args={"target": "#erp-submit-btn"})))
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Viewing ERP bills register", tool="browser_snapshot", args={})))
+    llm.queue_response(
+        LLMResponse(
+            parsed=AgentAction(
+                thought="Compiling reconciliation discrepancies between statement CSV and ERP",
+                is_finish=True,
+                finish_summary=(
+                    "Vendor statement reconciliation complete:\n"
+                    "1. INV-ACME-101: MATCHED ($34,500.00, Billed)\n"
+                    "2. INV-ACME-102: AMOUNT_MISMATCH (Statement indicates INR 12,500.00, but ERP register shows INR 64,977.03)\n"
+                    "3. INV-ACME-107: MISSING_IN_ERP (Statement lists USD 68,400.00 pending, absent in ERP bills register)"
+                ),
+            )
+        )
+    )
+    return llm
+
+
+def create_generalization_task_3_llm(base_url: str = "http://127.0.0.1:8001") -> FakeLLM:
+    """Generalization Task 3: Onboard new hire Priya: create the HR ticket, add her to the access sheet, and confirm."""
+    llm = FakeLLM()
+    llm.queue_response(
+        LLMResponse(
+            parsed=Goal(
+                outcome="Onboard new hire Priya: create the HR ticket, add her to the access sheet, and confirm.",
+                success_criteria=[
+                    "HR onboarding ticket created in Service Desk",
+                    "New hire added to system access control sheet",
+                    "Confirmation reported",
+                ],
+                is_blocking=False,
+            ),
+            provider="fake",
+        )
+    )
+    llm.queue_response(
+        LLMResponse(
+            parsed=InitialPlanOutput(
+                intents=[
+                    Intent(id="intent_1", description="Log in to Service Desk and create HR onboarding ticket", expected_outcome="Ticket created"),
+                    Intent(id="intent_2", description="Update system access control sheet in file share", expected_outcome="Access matrix updated"),
+                    Intent(id="intent_3", description="Confirm completion", expected_outcome="Task confirmed"),
+                ]
+            ),
+            provider="fake",
+        )
+    )
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Navigating to tickets login", tool="browser_open_url", args={"url": f"{base_url}/tickets/login"})))
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Entering username", tool="browser_type_text", args={"target": "#username", "text": "operator"})))
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Entering password", tool="browser_type_text", args={"target": "#password", "text": "tickets_pass123"})))
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Logging in", tool="browser_click", args={"target": "button[type='submit']"})))
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Opening new ticket form", tool="browser_open_url", args={"url": f"{base_url}/tickets/new"})))
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Entering title", tool="browser_type_text", args={"target": "#title", "text": "Onboard new hire Priya Sharma"})))
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Entering description", tool="browser_type_text", args={"target": "#description", "text": "Provision employee account, issue hardware, and configure system permissions."})))
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Entering assignee", tool="browser_type_text", args={"target": "#assignee", "text": "Deepak Sharma"})))
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Submitting ticket", tool="browser_click", args={"target": "button[type='submit']"})))
+    llm.queue_response(LLMResponse(parsed=AgentAction(thought="Reading current access matrix", tool="files_read_file", args={"path": "./env/fileshare/data/system_access_list.csv"})))
+    llm.queue_response(
+        LLMResponse(
+            parsed=AgentAction(
+                thought="Appending Priya Sharma to access matrix",
+                tool="files_write_file",
+                args={
+                    "path": "./env/fileshare/data/system_access_list.csv",
+                    "content": (
+                        "Employee Name,Role,Department,System Access,Status,Date Added\n"
+                        "Sneha Patel,IT Administrator,IT,\"ERP;Tickets;Portal\",Active,2026-01-15\n"
+                        "Arjun Verma,Finance Manager,Finance,\"ERP;Portal\",Active,2026-02-01\n"
+                        "Deepak Sharma,People Operations Lead,HR,\"Tickets\",Active,2026-03-10\n"
+                        "Priya Sharma,Software Engineer,Engineering,\"ERP;Tickets\",Active,2026-10-25\n"
+                    ),
+                },
+            )
+        )
+    )
+    llm.queue_response(
+        LLMResponse(
+            parsed=AgentAction(
+                thought="Confirming onboarding completion",
+                is_finish=True,
+                finish_summary="Successfully onboarded new hire Priya Sharma: created HR Service Desk ticket and recorded credentials in system_access_list.csv.",
+            )
+        )
+    )
+    return llm
 
 
 @pytest.fixture(autouse=True)

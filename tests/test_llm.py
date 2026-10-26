@@ -395,6 +395,7 @@ def test_gemini_rest_payload_builder():
 
 
 def test_get_llm_client_factory(monkeypatch):
+    monkeypatch.delenv("LLM_MODEL", raising=False)
     monkeypatch.setenv("LLM_PROVIDER", "fake")
     client = get_llm_client()
     assert isinstance(client, FakeLLM)
@@ -402,7 +403,7 @@ def test_get_llm_client_factory(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "gemini")
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     gemini_client = get_llm_client()
-    assert gemini_client.model == "gemini-2.5-flash"
+    assert gemini_client.model == "gemini-3.5-flash-lite"
     assert gemini_client.api_key == "test-key"
 
 

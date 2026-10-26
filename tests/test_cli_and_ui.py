@@ -108,7 +108,29 @@ async def test_cli_execution_scenario_4_duplicate(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_automated_demo_script_execution():
-    """Verify scripts/demo.py runs all 4 demo scenarios and outputs 0 exit code."""
-    exit_code = await run_all_demos()
-    assert exit_code == 0
+async def test_automated_demo_script_execution(monkeypatch):
+    """Verify scripts/demo.py checks API key and executes cleanly."""
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="GEMINI_API_KEY"):
+        await run_all_demos()
+
+    monkeypatch.setenv("GEMINI_API_KEY", "dummy_key")
+
+    async def mock_run_cli(**kwargs):
+        rm = RunManager(
+            db_path=kwargs.get("runs_db", "artifacts/runs.db"),
+            artifacts_dir=kwargs.get("artifacts_dir", "artifacts"),
+        )
+        r = rm.create_run(task="Demo run")
+        rm.update_run(r.run_id, working_memory={"verification_outcome": "PASS"})
+        rm.transition(r.run_id, RunStatus.COMPLETED, reason="Mock completed", force=True)
+        return 0
+
+    monkeypatch.setattr("scripts.demo.run_cli", mock_run_cli)
+
+    async def mock_founding():
+        return []
+
+    monkeypatch.setattr("scripts.demo.run_founding_showcases", mock_founding)
+    code = await run_all_demos()
+    assert code == 0

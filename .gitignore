@@ -45,6 +45,7 @@ env/fileshare/data/*.csv
 *.db
 *.db-journal
 *.db-wal
+*.db-shm
 
 # Testing & Coverage
 .pytest_cache/

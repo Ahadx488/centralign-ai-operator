@@ -63,8 +63,12 @@ class CompanyMemoryIndex:
 
         docs_to_insert: list[tuple[str, str, str, str, str]] = []
 
-        # 1. Index Systems (systems.yaml)
+        # 1. Index Systems (systems.yaml) & Credentials Vault
         systems_path = self.company_dir / "systems.yaml"
+        vault_path = self.company_dir / "vault.yaml"
+        from core.memory.vault import CredentialVault
+        vault = CredentialVault(vault_path)
+
         if systems_path.exists():
             try:
                 import yaml
@@ -76,7 +80,20 @@ class CompanyMemoryIndex:
                     desc = sys_info.get("description", "")
                     caps = ", ".join(sys_info.get("capabilities", []))
                     url = sys_info.get("url", "")
-                    content = f"System: {name}\nURL: {url}\nDescription: {desc}\nCapabilities: {caps}"
+                    login_info = sys_info.get("login")
+                    login_str = ""
+                    if login_info:
+                        login_url = login_info.get("login_url", "")
+                        cred_key = login_info.get("default_credentials", "")
+                        creds_detail = ""
+                        if cred_key:
+                            creds = vault.get(cred_key)
+                            if creds:
+                                u_name = creds.get("username") or creds.get("email")
+                                p_word = creds.get("password")
+                                creds_detail = f" (username: '{u_name}', password: '{p_word}')"
+                        login_str = f"\nLogin URL: {login_url}\nCredentials: {cred_key}{creds_detail}"
+                    content = f"System: {name}\nURL: {url}\nDescription: {desc}\nCapabilities: {caps}{login_str}"
                     docs_to_insert.append(
                         (f"system:{sys_key}", "system", name, content, str(systems_path))
                     )

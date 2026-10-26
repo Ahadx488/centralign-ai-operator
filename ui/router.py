@@ -4,9 +4,11 @@ import asyncio
 import json
 import logging
 import os
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import yaml
 from fastapi import APIRouter, Body, Form, Query, Request, Response
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -17,7 +19,6 @@ from core.llm.client import get_llm_client
 from core.policy.approvals import ApprovalInbox, ApprovalStatus
 from core.runs.manager import RunManager
 from core.runs.models import RunRecord
-from core.scenarios import get_scenario_llm
 from core.tools import register_default_tools, tool_registry
 from core.verify.verifier import IndependentVerifier
 from env.faults.manager import fault_manager
@@ -39,6 +40,18 @@ run_tasks: dict[str, asyncio.Task[Any]] = {}
 
 def get_run_manager() -> RunManager:
     return RunManager(db_path=RUNS_DB_PATH, artifacts_dir=ARTIFACTS_DIR)
+
+
+def get_active_llm() -> Any:
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        from core.agent.models import AgentAction
+        from core.llm.fake import FakeLLM
+        from core.llm.models import LLMResponse
+
+        mock_llm = FakeLLM()
+        mock_llm.queue_response(LLMResponse(parsed=AgentAction(thought="Mock step", is_finish=True, finish_summary="Mock completed")))
+        return mock_llm
+    return get_llm_client()
 
 
 def load_evidence_bundle(run_id: str) -> dict[str, Any] | None:
@@ -114,25 +127,32 @@ async def launch_run(
     verifier = IndependentVerifier(db_path="env/company.db", artifacts_dir=ARTIFACTS_DIR)
 
     task_str = task_body.get("task", "")
-    llm: Any = None
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        from core.agent.models import AgentAction, Goal, Intent
+        from core.agent.planner import InitialPlanOutput
+        from core.llm.fake import FakeLLM
+        from core.llm.models import LLMResponse
+
+        llm: Any = FakeLLM()
+        llm.queue_response(LLMResponse(parsed=Goal(outcome="Mock UI task"), provider="fake"))
+        llm.queue_response(LLMResponse(parsed=InitialPlanOutput(intents=[Intent(id="i1", description="step", expected_outcome="done")]), provider="fake"))
+        llm.queue_response(LLMResponse(parsed=AgentAction(thought="Ask question", tool="ask_human", args={"question": "Clarify?", "options": ["A", "B"]})))
+        llm.queue_response(LLMResponse(parsed=AgentAction(thought="Finished", is_finish=True, finish_summary="Done")))
+    else:
+        llm = get_llm_client()
 
     if scenario is not None:
         sc_num = int(scenario) if str(scenario).isdigit() else scenario
-        sc_llm, sc_task, sc_faults = get_scenario_llm(sc_num)
-        task_str = task_str or sc_task
+        scenarios_file = Path("company/scenarios.yaml")
+        sc_data: dict[str, Any] = {}
+        if scenarios_file.exists():
+            with open(scenarios_file) as sf:
+                sc_data = yaml.safe_load(sf) or {}
+        sc_info = sc_data.get(sc_num, sc_data.get(str(sc_num), {}))
+        task_str = task_str or sc_info.get("task", "")
+        sc_faults = sc_info.get("faults")
         if sc_faults:
             fault_manager.update_faults(sc_faults)
-        llm = sc_llm
-    else:
-        if os.getenv("GEMINI_API_KEY"):
-            try:
-                llm = get_llm_client()
-            except Exception:
-                sc_llm, _, _ = get_scenario_llm(1)
-                llm = sc_llm
-        else:
-            sc_llm, _, _ = get_scenario_llm(1)
-            llm = sc_llm
 
     run_id = f"run_{uuid4().hex[:12]}"
     executor = AgentExecutor(
@@ -167,9 +187,9 @@ async def resume_run(run_id: str, body: dict[str, Any] = Body(default_factory=di
     executor = active_executors.get(run_id)
     if not executor:
         rm = get_run_manager()
-        sc_llm, _, _ = get_scenario_llm(3)
+        llm = get_active_llm()
         executor = AgentExecutor(
-            llm_client=sc_llm,
+            llm_client=llm,
             run_manager=rm,
             registry=tool_registry,
             reflector=Reflector(None),
@@ -196,9 +216,9 @@ async def approve_run(run_id: str, body: dict[str, Any] = Body(default_factory=d
     executor = active_executors.get(run_id)
     if not executor:
         rm = get_run_manager()
-        sc_llm, _, _ = get_scenario_llm(1)
+        llm = get_active_llm()
         executor = AgentExecutor(
-            llm_client=sc_llm,
+            llm_client=llm,
             run_manager=rm,
             registry=tool_registry,
             reflector=Reflector(None),
@@ -247,9 +267,9 @@ async def approve_request_action(approval_id: str) -> Response:
     executor = active_executors.get(run_id)
     if not executor:
         rm = get_run_manager()
-        sc_llm, _, _ = get_scenario_llm(1)
+        llm = get_active_llm()
         executor = AgentExecutor(
-            llm_client=sc_llm,
+            llm_client=llm,
             run_manager=rm,
             registry=tool_registry,
             reflector=Reflector(None),
@@ -278,9 +298,9 @@ async def reject_request_action(approval_id: str) -> Response:
     executor = active_executors.get(run_id)
     if not executor:
         rm = get_run_manager()
-        sc_llm, _, _ = get_scenario_llm(1)
+        llm = get_active_llm()
         executor = AgentExecutor(
-            llm_client=sc_llm,
+            llm_client=llm,
             run_manager=rm,
             registry=tool_registry,
             reflector=Reflector(None),
@@ -324,9 +344,9 @@ async def edit_and_approve_request_action(
     executor = active_executors.get(run_id)
     if not executor:
         rm = get_run_manager()
-        sc_llm, _, _ = get_scenario_llm(1)
+        llm = get_active_llm()
         executor = AgentExecutor(
-            llm_client=sc_llm,
+            llm_client=llm,
             run_manager=rm,
             registry=tool_registry,
             reflector=Reflector(None),

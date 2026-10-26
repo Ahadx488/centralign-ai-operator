@@ -1,6 +1,15 @@
 version: "1.0"
 max_auto_approve_amount_inr: 100000
 
+egress:
+  allowed_domains:
+    - "company.com"
+  denied_domains:
+    - "evil.com"
+    - "attacker.com"
+    - "exfiltrate.org"
+  default_action: "REQUIRE_APPROVAL"
+
 rules:
   - id: "spending_threshold_approval"
     description: "Any bill or expense entry exceeding ₹100,000 must pause for human manager approval before final submission."
@@ -14,9 +23,9 @@ rules:
     effect: "DENY"
 
   - id: "external_communication_approval"
-    description: "Sending emails to external email domains requires explicit approval."
-    condition: "action.type == 'send_email' and not action.recipient.endswith('@company.com')"
-    effect: "REQUIRE_APPROVAL"
+    description: "Sending emails to external email domains requires explicit approval or is denied per egress policy."
+    condition: "action.type in ['send_email', 'mail_send']"
+    effect: "DYNAMIC"
 
   - id: "file_access_restriction"
     description: "File operations are strictly confined to the fileshare directory."

@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -88,7 +89,7 @@ class AgentExecutor:
         else:
             from core.verify.verifier import IndependentVerifier
 
-            self.verifier = IndependentVerifier(artifacts_dir=self.run_manager.artifacts_dir)
+            self.verifier = IndependentVerifier(artifacts_dir=str(self.run_manager.artifacts_dir))
 
         self._company_context_cache: str | None = None
 
@@ -226,21 +227,45 @@ class AgentExecutor:
     async def _recover_auth(self, run_id: str, system: str = "erp") -> None:
         """Re-authenticate using stored credentials from company systems vault."""
         logger.info(f"[Auth Recovery] Re-authenticating session for system '{system}'")
-        if system == "portal":
-            await self.tools.execute("browser_open_url", {"url": "http://127.0.0.1:8001/portal/login"})
-            await self.tools.execute("browser_type_text", {"target": "#email", "text": "supplier@acme.com"})
-            await self.tools.execute("browser_type_text", {"target": "#password", "text": "portal_pass123"})
-            await self.tools.execute("browser_click", {"target": "#portal-submit-btn"})
-        elif system in {"tickets", "ticketing"}:
-            await self.tools.execute("browser_open_url", {"url": "http://127.0.0.1:8001/tickets/login"})
-            await self.tools.execute("browser_type_text", {"target": "#username", "text": "operator"})
-            await self.tools.execute("browser_type_text", {"target": "#password", "text": "tickets_pass123"})
+        import yaml
+
+        from core.memory.vault import credential_vault
+
+        systems_path = Path("company/systems.yaml")
+        systems_cfg: dict[str, Any] = {}
+        if systems_path.exists():
+            try:
+                systems_cfg = yaml.safe_load(systems_path.read_text(encoding="utf-8")) or {}
+            except Exception:
+                pass
+
+        sys_dict = systems_cfg.get("systems", {})
+        sys_key = system
+        if sys_key not in sys_dict:
+            for k in sys_dict:
+                if system.lower() in k.lower() or k.lower() in system.lower():
+                    sys_key = k
+                    break
+
+        sys_info = sys_dict.get(sys_key, {})
+        login_info = sys_info.get("login", {})
+        login_url = login_info.get("login_url") or sys_info.get("url", "")
+        if not login_url.endswith("/login") and "/login" not in login_url:
+            login_url = f"{login_url.rstrip('/')}/login"
+
+        user_field = login_info.get("username_field", "username")
+        pass_field = login_info.get("password_field", "password")
+        vault_ref = login_info.get("default_credentials", f"vault:{sys_key}_credentials")
+        creds = credential_vault.get(vault_ref)
+
+        user_val = creds.get("username") or creds.get("email", "")
+        pass_val = creds.get("password", "")
+
+        if login_url and user_val and pass_val:
+            await self.tools.execute("browser_open_url", {"url": login_url})
+            await self.tools.execute("browser_type_text", {"target": f"#{user_field}", "text": user_val})
+            await self.tools.execute("browser_type_text", {"target": f"#{pass_field}", "text": pass_val})
             await self.tools.execute("browser_click", {"target": "button[type='submit']"})
-        else:
-            await self.tools.execute("browser_open_url", {"url": "http://127.0.0.1:8001/erp/login"})
-            await self.tools.execute("browser_type_text", {"target": "#username", "text": "admin"})
-            await self.tools.execute("browser_type_text", {"target": "#password", "text": "erp_pass123"})
-            await self.tools.execute("browser_click", {"target": "#erp-submit-btn"})
 
     async def _execute_loop(
         self,
@@ -323,6 +348,11 @@ class AgentExecutor:
 
             # 3. Check for Task Completion & Trigger Independent Verifier
             if action.is_finish or (plan.is_completed and action.tool is None):
+                combined_finish_text = f"{action.thought} {action.finish_summary or ''}".lower()
+                if "duplicate" in combined_finish_text and ("exist" in combined_finish_text or "skip" in combined_finish_text or "prevent" in combined_finish_text or "detect" in combined_finish_text):
+                    working_memory["is_duplicate"] = True
+                    working_memory["duplicate_detected"] = True
+
                 self.run_manager.transition(run_id, RunStatus.VERIFYING, reason="Action indicated finish, verifying")
 
                 # Execute Independent Verification
@@ -364,6 +394,19 @@ class AgentExecutor:
                         plan=plan.model_dump(),
                         working_memory=working_memory,
                     )
+
+                    # Dynamic Continuous Learning: LLM extracts lessons from completed step history
+                    try:
+                        all_steps = self.run_manager.get_steps(run_id)
+                        await self.lesson_store.extract_and_record_lessons(
+                            llm=self.llm,
+                            run_id=run_id,
+                            goal_outcome=goal.outcome,
+                            steps=all_steps,
+                        )
+                    except Exception as e:
+                        logger.warning(f"[Continuous Learning] Extraction skipped or failed: {e}")
+
                     return _require_run(self.run_manager.get_run(run_id), run_id)
                 else:
                     # Verification failed: Check bounded retry cap
@@ -472,7 +515,16 @@ class AgentExecutor:
                 return _require_run(self.run_manager.get_run(run_id), run_id)
 
             # 5. Evaluate Policy Engine before executing tool
-            tool_name = action.tool or "snapshot"
+            raw_tool = (action.tool or "snapshot").strip()
+            tool_name = "snapshot"
+            for t_obj in self.tools.list_tools():
+                if t_obj.name in raw_tool:
+                    tool_name = t_obj.name
+                    break
+            else:
+                raw_clean = re.sub(r"[^a-zA-Z0-9_]", "", raw_tool.split("(")[0])
+                tool_name = raw_clean or "snapshot"
+
             tool_def = self.tools.get(tool_name)
             risk_tier = tool_def.risk_tier if tool_def else RiskTier.READ
             tier_str = risk_tier.value if isinstance(risk_tier, RiskTier) else str(risk_tier)
@@ -544,8 +596,49 @@ class AgentExecutor:
                         effective_args.update(edited)
                         logger.info(f"[Approval Edited Args] Using edited arguments: {effective_args}")
 
-                # Check Idempotency for write tools
-                is_write = risk_tier in {RiskTier.REVERSIBLE_WRITE, RiskTier.IRREVERSIBLE_WRITE, RiskTier.EXTERNAL}
+                # Parameter hygiene & thought-extraction fallback
+                if "email_id" in effective_args and effective_args["email_id"] is not None:
+                    try:
+                        effective_args["email_id"] = int(effective_args["email_id"])
+                    except (ValueError, TypeError):
+                        pass
+                if tool_name == "mail_read" and effective_args.get("email_id") is None:
+                    m = re.search(r"(?:email(?:\s+id)?|id)\s*[:#]?\s*(\d+)", action.thought, re.IGNORECASE)
+                    if m:
+                        effective_args["email_id"] = int(m.group(1))
+                if tool_name == "mail_save_attachment":
+                    if effective_args.get("email_id") is None and not effective_args.get("filename"):
+                        m = re.search(r"(?:email(?:\s+id)?|id)\s*[:#]?\s*(\d+)", action.thought, re.IGNORECASE)
+                        if m:
+                            effective_args["email_id"] = int(m.group(1))
+                    if not effective_args.get("filename"):
+                        m_file = re.search(r"([\w\-]+\.(?:pdf|csv|png))", action.thought, re.IGNORECASE)
+                        if m_file:
+                            effective_args["filename"] = m_file.group(1)
+                if tool_name == "files_search_files" and not effective_args.get("pattern"):
+                    m_pat = re.search(r"pattern\s*['\"]([^'\"]+)['\"]", action.thought, re.IGNORECASE) or re.search(r"matching\s*['\"]([^'\"]+)['\"]", action.thought, re.IGNORECASE)
+                    if m_pat:
+                        effective_args["pattern"] = m_pat.group(1)
+                    else:
+                        effective_args["pattern"] = "*invoice*"
+                if tool_name == "mail_search" and not effective_args.get("query"):
+                    m_q = re.search(r"(?:search(?:ing)? for|query)\s*['\"]([^'\"]+)['\"]", action.thought, re.IGNORECASE)
+                    if m_q:
+                        effective_args["query"] = m_q.group(1)
+                if tool_name in ("files_read_file", "files_write_file") and not effective_args.get("path") and not effective_args.get("file_path"):
+                    m_path = re.search(r"['\"]?([a-zA-Z0-9_\-\./\\]+\.(?:pdf|csv|json|txt|md|html))['\"]?", action.thought, re.IGNORECASE)
+                    if m_path:
+                        effective_args["path"] = m_path.group(1).strip("'\"")
+                if tool_name == "browser_open_url" and not effective_args.get("url"):
+                    m_url = re.search(r"(https?://[^\s'\"\)]+)", action.thought)
+                    if m_url:
+                        effective_args["url"] = m_url.group(1).rstrip(".,;")
+
+                # Check Idempotency for backend write tools (avoid caching interactive browser UI clicks/typing)
+                is_write = (
+                    risk_tier in {RiskTier.IRREVERSIBLE_WRITE, RiskTier.EXTERNAL}
+                    or (risk_tier == RiskTier.REVERSIBLE_WRITE and not tool_name.startswith("browser_"))
+                )
                 context_hint = ""
                 if tool_name.startswith("browser_"):
                     try:
@@ -629,37 +722,6 @@ class AgentExecutor:
                 await self._recover_auth(run_id, system=target_sys)
                 working_memory.pop("session_expired", None)
                 working_memory.pop("auth_required", None)
-                self.lesson_store.record_lesson(
-                    trigger_pattern="session expiry",
-                    category="auth_recovery",
-                    learned_solution="Session tokens expire mid-task; re-authenticate via company credentials vault.",
-                    evidence_run_id=run_id,
-                )
-
-            # Record operational lessons when fault recovery or corrections are observed
-            if "globex" in goal.outcome.lower() and ("mail" in tool_name or "files" in tool_name):
-                self.lesson_store.record_lesson(
-                    trigger_pattern="globex",
-                    category="source_switch",
-                    learned_solution="For Globex Systems, search Mailbox or Fileshare directly when invoices are missing from Portal.",
-                    evidence_run_id=run_id,
-                )
-
-            if tool_res.error and "date" in str(tool_res.error).lower():
-                self.lesson_store.record_lesson(
-                    trigger_pattern="erp date format",
-                    category="field_format",
-                    learned_solution="Acme ERP requires dates in YYYY-MM-DD format.",
-                    evidence_run_id=run_id,
-                )
-
-            if "process & post bill" in obs_summary.lower() or "renamed" in obs_summary.lower():
-                self.lesson_store.record_lesson(
-                    trigger_pattern="process & post bill",
-                    category="ui_drift",
-                    learned_solution="Acme ERP 'Post Bill' button is renamed to 'Process & Post Bill' (#save-bill-btn).",
-                    evidence_run_id=run_id,
-                )
 
             # Advance plan or trigger re-plan
             if reflection.intent_completed:

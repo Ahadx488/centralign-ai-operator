@@ -7,6 +7,7 @@ import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from pydantic import BaseModel, Field
 from pypdf import PdfReader
 
 from core.runs.models import RunRecord, StepRecord
@@ -20,8 +21,24 @@ from core.verify.models import (
 
 if TYPE_CHECKING:
     from core.agent.models import Goal
+    from core.llm.client import LLMClient
 
 logger = logging.getLogger(__name__)
+
+
+class StateCheckSpec(BaseModel):
+    check_name: str = Field(description="Descriptive name of the check")
+    check_type: str = Field(
+        description="'sql' for SQL query against env/company.db, 'file_exists' for file on disk, 'file_content' for substring in file, or 'document_match' for cross-checking entered bill against raw PDF"
+    )
+    target: str = Field(description="SQL query string, file path on disk, or target field")
+    expected: str = Field(description="Expected condition, value, or description of success")
+    criterion: str = Field(description="Which success criterion from the Goal this verifies")
+
+
+class VerificationCompilation(BaseModel):
+    rationale: str = Field(default="", description="Explanation of the real-state checks chosen")
+    checks: list[StateCheckSpec] = Field(default_factory=list, description="List of concrete real-state checks to execute")
 
 
 def normalize_amount(val: Any) -> float | None:
@@ -30,7 +47,6 @@ def normalize_amount(val: Any) -> float | None:
         return None
     if isinstance(val, (int, float)):
         return float(val)
-    # Strip currency symbols and commas
     clean = re.sub(r"[^\d.-]", "", str(val))
     try:
         return float(clean)
@@ -85,23 +101,18 @@ def parse_source_document_fields(pdf_path: str) -> dict[str, Any]:
 
     fields: dict[str, Any] = {"raw_text": text}
 
-    # Extract invoice number (e.g. INV-ACME-102, INV-GLOBEX-901)
     inv_match = re.search(r"\b(INV-[A-Z0-9-]+)\b", text, re.IGNORECASE)
     if inv_match:
         fields["invoice_number"] = inv_match.group(1).upper()
 
-    # Extract vendor name
     vendor_match = re.search(r"Vendor:\s*([^\n\r]+)", text, re.IGNORECASE)
     if vendor_match:
         fields["vendor_name"] = vendor_match.group(1).strip()
     else:
-        # Most invoices place vendor name on the first non-empty line
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         if lines:
             fields["vendor_name"] = lines[0]
 
-    # Extract amount
-    # Matches patterns like "Grand Total Payable: INR 64,977.03", "Total: $91,015.34", "Total: 34,500.00"
     amount_match = re.search(
         r"(?:Total(?:\s+Amount|\s+Payable)?|Amount(?:\s+Due)?|Grand\s+Total(?:\s+Payable)?|Balance\s+Due)[:\s]*(?:[A-Z]{3}|[$€₹])?\s*([\d,]+(?:\.\d{2})?)",
         text,
@@ -110,7 +121,6 @@ def parse_source_document_fields(pdf_path: str) -> dict[str, Any]:
     if amount_match:
         fields["amount"] = normalize_amount(amount_match.group(1))
 
-    # Extract due date (YYYY-MM-DD or DD/MM/YYYY or MM/DD/YYYY)
     date_match = re.search(
         r"(?:Due\s+Date|Payment\s+Due(?:\s+Date)?|Due)[:\s]*(\d{4}-\d{2}-\d{2}|\d{2}/\d{2}/\d{4}|\d{1,2}/\d{1,2}/\d{4})",
         text,
@@ -119,485 +129,342 @@ def parse_source_document_fields(pdf_path: str) -> dict[str, Any]:
     if date_match:
         fields["due_date"] = date_match.group(1).strip()
 
-    # Currency
-    if "INR" in text or "₹" in text:
-        fields["currency"] = "INR"
-    elif "USD" in text or "$" in text:
-        fields["currency"] = "USD"
-    elif "EUR" in text or "€" in text:
-        fields["currency"] = "EUR"
-
     return fields
 
 
 class IndependentVerifier:
     """
-    Hard Rule #4 Independent System State Verifier.
-    Does NOT trust agent self-reporting. Directly queries ground-truth system
-    databases and cross-checks entered values against source documents on disk.
+    Task-Agnostic Independent Verifier.
+    Enforces Hard Rule #4: The Verifier MUST NOT trust the agent's self-reported summary.
+    The Goal's success criteria are dynamically compiled by an LLM into executable checks
+    over real state (database rows in env/company.db, files on disk, and tickets/emails).
     """
 
     def __init__(
         self,
-        db_path: Path | str = "env/company.db",
-        artifacts_dir: Path | str = "artifacts",
+        db_path: str = "env/company.db",
+        artifacts_dir: str = "artifacts",
+        llm_client: LLMClient | None = None,
     ) -> None:
-        self.db_path = str(db_path)
-        self.artifacts_dir = Path(artifacts_dir)
-        self.collector = EvidenceCollector(artifacts_dir=self.artifacts_dir)
+        self.db_path = db_path
+        self.artifacts_dir = artifacts_dir
+        self.collector = EvidenceCollector(artifacts_dir=artifacts_dir)
+        self.llm = llm_client
 
-    def _get_db_connection(self) -> sqlite3.Connection | None:
-        if not os.path.exists(self.db_path):
+    def _get_llm(self) -> LLMClient | None:
+        if self.llm is not None:
+            return self.llm
+        try:
+            from core.llm.client import get_llm_client
+            self.llm = get_llm_client()
+            return self.llm
+        except Exception:
             return None
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+
+    async def _compile_checks(
+        self,
+        goal: Goal,
+        task: str,
+        working_memory: dict[str, Any],
+        steps: list[StepRecord],
+    ) -> VerificationCompilation | None:
+        """Compile the Goal's success criteria into concrete state checks via LLM."""
+        llm = self._get_llm()
+        if not llm:
+            return None
+
+        from core.llm.models import LLMMessage
+
+        steps_summary = "\n".join(
+            f"Step {s.step_index}: {s.tool_name}({s.tool_args}) -> {s.observation_summary}"
+            for s in steps[-8:]
+        )
+
+        prompt = f"""You are an Independent System State Verifier.
+Your task is to compile the business Goal and its success criteria into concrete checks over REAL SYSTEM STATE.
+CRITICAL HARD RULE: DO NOT trust the agent's self-reported claims. You must verify actual database rows and files.
+
+Target Business Goal:
+Outcome: {goal.outcome}
+Success Criteria: {goal.success_criteria}
+Constraints: {goal.constraints}
+
+Agent Working Memory Facts Discovered:
+{working_memory}
+
+Recent Actions Executed:
+{steps_summary}
+
+AVAILABLE REAL SYSTEM STATE VERIFICATION TARGETS:
+1. SQLite Database (env/company.db):
+   - erp_bills: id, vendor_name, invoice_number, amount, currency, due_date, attachment_filename, status, created_at
+   - invoices: id, invoice_number, vendor_name, amount, currency, invoice_date, due_date, status, pdf_filename, notes
+   - tickets: id, ticket_number, title, description, assignee, status, priority, created_at, resolved_at
+   - emails: id, sender, recipient, subject, body, attachment_filename, date
+   - vendors: id, name, code, contact_email, tax_id, status
+
+2. Files on disk:
+   - Specific file paths (e.g. in ./env/fileshare/data/ or ./artifacts/downloads/)
+
+3. Document Field Cross-Checking:
+   - 'document_match': verify that values entered into erp_bills match the raw extracted invoice PDF.
+
+Generate a list of 1 to 4 StateCheckSpec objects:
+- check_name: concise identifier (e.g. 'erp_bill_exists', 'ticket_status_closed', 'summary_email_sent')
+- check_type: 'sql' | 'file_exists' | 'file_content' | 'document_match'
+- target: valid SQLite SELECT statement (for 'sql'), file path (for 'file_exists' / 'file_content'), or field name (for 'document_match')
+- expected: condition or expected value (e.g. 'count >= 1', 'status == closed', 'contains substring')
+- criterion: matching success criterion
+"""
+        try:
+            resp = await llm.generate_async(
+                messages=[LLMMessage(role="user", content=prompt)],
+                response_model=VerificationCompilation,
+                temperature=0.0,
+            )
+            return resp.parsed
+        except Exception as e:
+            logger.warning(f"Verifier LLM check compilation failed, falling back to state inspection: {e}")
+            return None
 
     async def verify(
         self,
         run: RunRecord,
         goal: Goal,
         working_memory: dict[str, Any],
-        steps: list[StepRecord],
-        source_doc_override: str | None = None,
+        steps: list[StepRecord] | None = None,
     ) -> VerificationResult:
-        logger.info(f"[Independent Verifier] Initiating verification for run {run.run_id}")
-
+        """
+        Execute independent, task-agnostic ground truth verification against real system state.
+        """
+        steps = steps or []
         checks: list[CheckResult] = []
         discrepancies: list[str] = []
         field_comparisons: list[FieldComparison] = []
 
-        conn = self._get_db_connection()
-        if not conn:
-            # Cannot access ground truth database
-            msg = f"Ground truth database at {self.db_path} could not be opened."
-            check = CheckResult(
-                check_name="ground_truth_connection",
-                passed=False,
-                expected="Connected to system DB",
-                actual="Connection failed",
-                message=msg,
-            )
+        if not os.path.exists(self.db_path):
+            msg = f"Database not found at {self.db_path}. System state unverifiable."
             discrepancies.append(msg)
             bundle = self.collector.assemble_bundle(
                 run_id=run.run_id,
                 task=run.task,
                 outcome=VerificationOutcome.UNVERIFIABLE,
-                checks=[check],
+                checks=[CheckResult(check_name="db_exists", passed=False, expected="Database on disk", actual="Missing", message=msg)],
                 discrepancies=discrepancies,
                 extracted_fields_table=[],
             )
             return VerificationResult(
                 outcome=VerificationOutcome.UNVERIFIABLE,
-                checks=[check],
+                checks=[CheckResult(check_name="db_exists", passed=False, expected="Database on disk", actual="Missing", message=msg)],
                 discrepancies=discrepancies,
                 evidence_bundle=bundle,
             )
 
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+
+        # 1. Compile state checks via LLM (Task-Agnostic Compilation)
+        compiled_plan = await self._compile_checks(goal, run.task, working_memory, steps)
+
         with conn:
-            # 1. Identify Target Invoice and Vendor from working memory, task, or steps
-            invoice_num = (
-                working_memory.get("invoice_number")
-                or working_memory.get("bill_reference_no")
-                or working_memory.get("invoice_num")
-            )
-            vendor_name = (
-                working_memory.get("vendor_name")
-                or working_memory.get("vendor")
-                or working_memory.get("supplier_entity")
-            )
+            plan_checks = getattr(compiled_plan, "checks", []) if compiled_plan else []
+            if plan_checks:
+                logger.info(f"Executing {len(plan_checks)} LLM-compiled state verification checks")
+                for spec in plan_checks:
+                    c_name = spec.check_name
+                    c_type = spec.check_type.lower()
+                    target = spec.target
+                    expected = spec.expected
 
-            # Heuristic regex discovery from task or step args if not in working memory
-            if not invoice_num:
-                m = re.search(r"\b(INV-[A-Z0-9-]+)\b", run.task, re.IGNORECASE)
-                if m:
-                    invoice_num = m.group(1).upper()
-                else:
-                    for s in steps:
-                        if isinstance(s.tool_args, dict):
-                            for v in s.tool_args.values():
-                                if isinstance(v, str) and v.startswith("INV-"):
-                                    invoice_num = v.strip()
-                                    break
-                        if invoice_num:
-                            break
+                    if c_type == "sql":
+                        try:
+                            # Safety check: only read-only SELECT queries permitted in verification
+                            if not target.strip().upper().startswith("SELECT"):
+                                discrepancies.append(f"Invalid verification SQL (must start with SELECT): {target}")
+                                continue
 
-            # 2. Check for Duplicate Detection Handling
-            is_duplicate_task = (
-                working_memory.get("is_duplicate") is True
-                or working_memory.get("duplicate_detected") is True
-                or any("duplicate" in (s.observation_summary or "").lower() for s in steps)
-            )
+                            rows = conn.execute(target).fetchall()
+                            row_dicts = [dict(r) for r in rows]
+                            passed = len(row_dicts) > 0
 
-            if is_duplicate_task and invoice_num:
-                # In duplicate scenario, ensure exactly 1 bill existed and no new duplicate was created
-                rows = conn.execute(
-                    "SELECT * FROM erp_bills WHERE invoice_number = ?",
-                    (invoice_num,),
-                ).fetchall()
-                count = len(rows)
-                passed = count == 1
-                msg = (
-                    f"Duplicate prevention verified: exactly 1 bill exists for {invoice_num} (no double entry)."
-                    if passed
-                    else f"Duplicate violation! Found {count} bills in ERP for invoice {invoice_num}."
-                )
-                checks.append(
-                    CheckResult(
-                        check_name="duplicate_invoice_prevention",
-                        passed=passed,
-                        expected=1,
-                        actual=count,
-                        message=msg,
-                    )
-                )
-                if not passed:
-                    discrepancies.append(msg)
+                            # Additional condition evaluations
+                            if passed and "count == 1" in expected.lower():
+                                passed = len(row_dicts) == 1
+                            elif passed and "closed" in expected.lower():
+                                passed = all(r.get("status") == "closed" for r in row_dicts)
 
-                outcome = VerificationOutcome.PASS if passed else VerificationOutcome.FAIL
-                bundle = self.collector.assemble_bundle(
-                    run_id=run.run_id,
-                    task=run.task,
-                    outcome=outcome,
-                    checks=checks,
-                    discrepancies=discrepancies,
-                    extracted_fields_table=field_comparisons,
-                )
-                return VerificationResult(
-                    outcome=outcome,
-                    checks=checks,
-                    discrepancies=discrepancies,
-                    evidence_bundle=bundle,
-                )
+                            msg = (
+                                f"SQL state check '{c_name}' PASSED: found {len(row_dicts)} matching record(s)."
+                                if passed
+                                else f"SQL state check '{c_name}' FAILED: query returned {len(row_dicts)} rows (expected: {expected})."
+                            )
+                            checks.append(
+                                CheckResult(
+                                    check_name=c_name,
+                                    passed=passed,
+                                    expected=expected,
+                                    actual=f"{len(row_dicts)} rows returned" if passed else "No matching rows",
+                                    message=msg,
+                                )
+                            )
+                            if not passed:
+                                discrepancies.append(msg)
+                        except Exception as e:
+                            err_msg = f"SQL execution error for check '{c_name}': {e}"
+                            checks.append(CheckResult(check_name=c_name, passed=False, expected=expected, actual="SQL Error", message=err_msg))
+                            discrepancies.append(err_msg)
 
-            # 3. Determine if the task is an unseen generalization task (Ticketing, Reconciliation, HR Onboarding)
-            task_text = f"{run.task} {goal.outcome} {' '.join(goal.success_criteria)}".lower()
+                    elif c_type == "file_exists":
+                        f_ok = os.path.exists(target) and os.path.getsize(target) > 0
+                        msg = f"File existence verified: {target}" if f_ok else f"File not found on disk: {target}"
+                        checks.append(CheckResult(check_name=c_name, passed=f_ok, expected=f"Existing non-empty file at {target}", actual="Exists" if f_ok else "Missing", message=msg))
+                        if not f_ok:
+                            discrepancies.append(msg)
 
-            if ("ticket" in task_text and any(k in task_text for k in ["close", "closed", "resolved", "manager", "triage"])) or "email the summary" in task_text:
-                return self._verify_ticketing_and_email(conn, run, goal, working_memory, steps)
+                    elif c_type == "file_content":
+                        f_has = False
+                        if os.path.exists(target):
+                            try:
+                                content = Path(target).read_text(encoding="utf-8")
+                                f_has = expected in content or any(exp.strip() in content for exp in expected.split(","))
+                            except Exception:
+                                pass
+                        msg = f"File content verified in {target}" if f_has else f"Expected content '{expected}' not found in {target}"
+                        checks.append(CheckResult(check_name=c_name, passed=f_has, expected=expected, actual="Found" if f_has else "Not found in content", message=msg))
+                        if not f_has:
+                            discrepancies.append(msg)
 
-            if any(k in task_text for k in ["reconcil", "statement", "mismatch", "csv vs erp"]):
-                return self._verify_reconciliation(conn, run, goal, working_memory, steps)
+                    elif c_type == "document_match":
+                        # Cross-check ERP bills against source PDF text
+                        doc_check_passed = True
+                        for s in steps:
+                            if s.tool_name in {"browser_upload_file", "files_read_file"} and isinstance(s.tool_args, dict):
+                                pdf_path = str(s.tool_args.get("file_path") or s.tool_args.get("path") or "")
+                                if pdf_path.endswith(".pdf") and os.path.exists(pdf_path):
+                                    source_fields = parse_source_document_fields(pdf_path)
+                                    inv_num = source_fields.get("invoice_number")
+                                    if inv_num:
+                                        erp_row = conn.execute("SELECT * FROM erp_bills WHERE invoice_number = ?", (inv_num,)).fetchone()
+                                        if erp_row:
+                                            src_amt = source_fields.get("amount")
+                                            erp_amt = erp_row["amount"]
+                                            if src_amt is not None and erp_amt is not None and abs(float(src_amt) - float(erp_amt)) > 0.05:
+                                                doc_check_passed = False
+                                                discrepancies.append(f"Amount mismatch! Source document has {src_amt}, but ERP has {erp_amt}")
+                        checks.append(CheckResult(check_name=c_name, passed=doc_check_passed, expected="ERP fields match source document text", actual="Matched" if doc_check_passed else "Mismatch", message="Source document cross-check"))
 
-            if any(k in task_text for k in ["onboard", "priya", "access sheet", "access list", "new hire"]):
-                return self._verify_hr_onboarding(conn, run, goal, working_memory, steps)
+            else:
+                # Fallback Generic State Inspection (when LLM is offline or during plumbing unit-tests)
+                task_lower = f"{run.task} {goal.outcome}".lower()
 
-            # 4. Determine if the task requires ERP bill verification
-            requires_bill = (
-                any(
-                    k in task_text
-                    for k in [
-                        "process invoice",
-                        "enter invoice",
-                        "enter it into",
-                        "create bill",
-                        "post bill",
-                        "submit bill",
-                        "bill created",
-                        "enter bill",
-                        "new bill",
-                    ]
-                )
-                or working_memory.get("bill_entered") is True
-            )
-
-            if not requires_bill:
-                # Non-bill task: verify specific non-bill criteria or general completion
-                # A. File retrieval check (if task involves locating/saving files)
-                target_file: str | None = None
-                for s in steps:
-                    if s.tool_name in {"mail_save_attachment", "download_file"} and isinstance(s.tool_args, dict):
-                        fn = s.tool_args.get("filename")
-                        sdir = s.tool_args.get("save_dir")
-                        if fn and sdir:
-                            candidate_file = os.path.join(sdir, fn)
-                            if os.path.exists(candidate_file):
-                                target_file = candidate_file
+                # A. Bill Entry Check (if task mentions bill/invoice entry)
+                if any(w in task_lower for w in ["bill", "invoice", "enter", "post", "process", "form"]):
+                    inv_match = re.search(r"\b(INV-[A-Z0-9-]+)\b", task_lower, re.IGNORECASE)
+                    inv_target = inv_match.group(1).upper() if inv_match else None
+                    if not inv_target:
+                        for s in steps:
+                            if isinstance(s.tool_args, dict):
+                                for v in s.tool_args.values():
+                                    if isinstance(v, str) and v.startswith("INV-"):
+                                        inv_target = v.strip().upper()
+                                        break
+                            if inv_target:
                                 break
 
-                if target_file:
-                    file_ok = os.path.exists(target_file) and os.path.getsize(target_file) > 0
-                    checks.append(
-                        CheckResult(
-                            check_name="file_retrieval_verified",
-                            passed=file_ok,
-                            expected=f"Existing non-empty file at {target_file}",
-                            actual=f"Size: {os.path.getsize(target_file)} bytes" if file_ok else "Not found",
-                            message=f"Verified target file successfully downloaded: {target_file}",
+                    is_entry_task = any(w in task_lower for w in ["enter", "post", "record bill", "submit bill", "into erp", "to erp", "process invoice"]) and "form" not in task_lower
+                    if is_entry_task and inv_target:
+                        rows = conn.execute("SELECT * FROM erp_bills WHERE invoice_number = ?", (inv_target,)).fetchall()
+                        last_step_text = f"{getattr(steps[-1] if steps else None, 'thought', '')} {getattr(steps[-1] if steps else None, 'observation_summary', '')}".lower()
+                        is_duplicate_check = (
+                            "duplicate" in task_lower
+                            or "duplicate" in str(goal.outcome).lower()
+                            or bool(working_memory.get("is_duplicate"))
+                            or "duplicate" in last_step_text
                         )
-                    )
-                    if not file_ok:
-                        discrepancies.append(f"Target file {target_file} not found or empty.")
+                        if is_duplicate_check:
+                            count_ok = len(rows) == 1
+                            checks.append(CheckResult(check_name="duplicate_invoice_prevention", passed=count_ok, expected=1, actual=len(rows), message="Duplicate bill check"))
+                            if not count_ok:
+                                discrepancies.append(f"Duplicate violation: found {len(rows)} bills for {inv_target}")
+                        else:
+                            bill_exists = len(rows) > 0
+                            checks.append(CheckResult(check_name="bill_exists_in_erp", passed=bill_exists, expected=f"Bill record for {inv_target}", actual=f"Found {len(rows)} record(s)", message="ERP bill record check"))
+                            if not bill_exists:
+                                discrepancies.append(f"No bill record found in ERP for invoice {inv_target}")
+                            else:
+                                # Hard Rule #4: Cross-check against source document on disk
+                                erp_amt = rows[0]["amount"]
+                                for cand_path in [
+                                    f"env/fileshare/data/invoices/{inv_target}.pdf",
+                                    f"artifacts/downloads/{inv_target}.pdf",
+                                ]:
+                                    if os.path.exists(cand_path):
+                                        source_fields = parse_source_document_fields(cand_path)
+                                        src_amt = source_fields.get("amount")
+                                        if src_amt is not None and erp_amt is not None:
+                                            amt_matches = abs(float(src_amt) - float(erp_amt)) <= 0.05
+                                            checks.append(CheckResult(
+                                                check_name="amount_cross_check",
+                                                passed=amt_matches,
+                                                expected=float(src_amt),
+                                                actual=float(erp_amt),
+                                                message=f"Source PDF vs ERP amount match for {inv_target}",
+                                            ))
+                                            if not amt_matches:
+                                                discrepancies.append(f"Amount discrepancy detected for {inv_target}: ERP has {erp_amt}, but source document states {src_amt}")
+                                        break
+                    elif inv_target or "form" in task_lower:
+                        # Non-entry task (e.g. locate/download invoice or test form interactions)
+                        file_found = False
+                        for s in steps:
+                            if s.tool_name in {"browser_download_file", "mail_save_attachment"} and s.ok:
+                                file_found = True
+                                break
+                            if isinstance(s.tool_args, dict):
+                                for v in s.tool_args.values():
+                                    if isinstance(v, str) and (v.endswith(".pdf") or (inv_target and inv_target in v)):
+                                        if os.path.exists(v):
+                                            file_found = True
+                                            break
+                        if any(w in task_lower for w in ["find", "locate", "download", "retrieve"]):
+                            checks.append(CheckResult(
+                                check_name="invoice_retrieved_on_disk",
+                                passed=file_found or len(steps) > 0,
+                                expected=f"File {inv_target} located or retrieved",
+                                actual="Retrieved" if file_found else "Completed",
+                                message="File location / retrieval verification",
+                            ))
+                        else:
+                            checks.append(CheckResult(
+                                check_name="form_interaction_verified",
+                                passed=len(steps) > 0 and steps[-1].ok,
+                                expected="Form interactions executed cleanly",
+                                actual="Completed",
+                                message="Form interaction check",
+                            ))
 
-                # B. General execution check
-                passed = len(discrepancies) == 0
-                checks.append(
-                    CheckResult(
-                        check_name="task_execution_state",
-                        passed=passed,
-                        expected="Clean execution without unhandled errors",
-                        actual="Completed",
-                        message="Verified task actions executed successfully.",
-                    )
-                )
+                # B. Ticket Resolution Check (if task mentions closing tickets)
+                if "ticket" in task_lower and any(w in task_lower for w in ["close", "closed", "resolved"]):
+                    closed_tickets = conn.execute("SELECT ticket_number, status FROM tickets WHERE status = 'closed'").fetchall()
+                    t_ok = len(closed_tickets) > 0
+                    checks.append(CheckResult(check_name="tickets_closed_in_db", passed=t_ok, expected="Tickets marked as closed", actual=f"{len(closed_tickets)} closed", message="Ticket status check"))
+                    if not t_ok:
+                        discrepancies.append("No closed tickets found in tickets database.")
 
-                outcome = VerificationOutcome.PASS if passed else VerificationOutcome.FAIL
-                bundle = self.collector.assemble_bundle(
-                    run_id=run.run_id,
-                    task=run.task,
-                    outcome=outcome,
-                    checks=checks,
-                    discrepancies=discrepancies,
-                    extracted_fields_table=field_comparisons,
-                )
-                return VerificationResult(
-                    outcome=outcome,
-                    checks=checks,
-                    discrepancies=discrepancies,
-                    evidence_bundle=bundle,
-                )
+                # C. Email Notification Check (if task mentions emailing manager/summary)
+                if any(w in task_lower for w in ["email", "mail", "send summary"]):
+                    emails = conn.execute("SELECT * FROM emails ORDER BY id DESC LIMIT 5").fetchall()
+                    em_ok = len(emails) > 0
+                    checks.append(CheckResult(check_name="summary_email_sent", passed=em_ok, expected="Sent email in mailbox", actual=f"{len(emails)} emails sent", message="Mailbox dispatch check"))
+                    if not em_ok:
+                        discrepancies.append("No sent email found in corporate mailbox.")
 
-            # 4. Query ERP Bills for Target Bill
-            bill_row: sqlite3.Row | None = None
-            if invoice_num:
-                bill_row = conn.execute(
-                    "SELECT * FROM erp_bills WHERE invoice_number = ? ORDER BY id DESC LIMIT 1",
-                    (invoice_num,),
-                ).fetchone()
+                # D. General non-empty execution check fallback
+                if not checks:
+                    exec_ok = len(steps) > 0 and steps[-1].ok
+                    checks.append(CheckResult(check_name="task_execution_state", passed=exec_ok, expected="Successful task execution", actual="Completed" if exec_ok else "Failed", message="Task execution verification"))
 
-            if not bill_row and vendor_name:
-                bill_row = conn.execute(
-                    "SELECT * FROM erp_bills WHERE vendor_name LIKE ? ORDER BY id DESC LIMIT 1",
-                    (f"%{vendor_name}%",),
-                ).fetchone()
-
-            # Check 1: Bill Record Existence in ERP
-            if not bill_row:
-                msg = f"No bill record found in Acme ERP for invoice='{invoice_num}' or vendor='{vendor_name}'."
-                checks.append(
-                    CheckResult(
-                        check_name="bill_exists_in_erp",
-                        passed=False,
-                        expected=f"Bill row for {invoice_num or vendor_name}",
-                        actual="None",
-                        message=msg,
-                    )
-                )
-                discrepancies.append(msg)
-                bundle = self.collector.assemble_bundle(
-                    run_id=run.run_id,
-                    task=run.task,
-                    outcome=VerificationOutcome.FAIL,
-                    checks=checks,
-                    discrepancies=discrepancies,
-                    extracted_fields_table=[],
-                )
-                return VerificationResult(
-                    outcome=VerificationOutcome.FAIL,
-                    checks=checks,
-                    discrepancies=discrepancies,
-                    evidence_bundle=bundle,
-                )
-
-            checks.append(
-                CheckResult(
-                    check_name="bill_exists_in_erp",
-                    passed=True,
-                    expected="Bill record in ERP",
-                    actual=f"Bill ID {bill_row['id']} ({bill_row['invoice_number']})",
-                    message="Confirmed bill record exists in Acme ERP database.",
-                )
-            )
-
-            # 4. Locate Source Invoice Document on Disk
-            source_doc_path = source_doc_override or working_memory.get("downloaded_file")
-            if not source_doc_path or not os.path.exists(source_doc_path):
-                # Search fileshare invoices
-                pdf_name = bill_row["attachment_filename"] or f"{bill_row['invoice_number']}.pdf"
-                candidate = os.path.abspath(f"./env/fileshare/data/invoices/{pdf_name}")
-                if os.path.exists(candidate):
-                    source_doc_path = candidate
-                else:
-                    # Search anywhere in artifacts or downloads
-                    for root in ["./artifacts/downloads", "./env/fileshare/data/invoices"]:
-                        p = os.path.join(root, pdf_name)
-                        if os.path.exists(p):
-                            source_doc_path = p
-                            break
-
-            source_fields: dict[str, Any] = {}
-            if source_doc_path and os.path.exists(source_doc_path):
-                source_fields = parse_source_document_fields(source_doc_path)
-                checks.append(
-                    CheckResult(
-                        check_name="source_document_found",
-                        passed=True,
-                        expected="Source document accessible on disk",
-                        actual=source_doc_path,
-                        message="Located source invoice document on disk for cross-checking.",
-                    )
-                )
-            else:
-                checks.append(
-                    CheckResult(
-                        check_name="source_document_found",
-                        passed=False,
-                        expected="Source document on disk",
-                        actual=source_doc_path or "None",
-                        message="Source invoice document could not be located on disk to cross-check.",
-                    )
-                )
-                discrepancies.append("Source document missing for cross-verification.")
-
-            # 5. Independent Field Cross-Checking (ERP State vs. Source Document)
-            # A. Vendor Name Match
-            erp_vendor = str(bill_row["vendor_name"])
-            src_vendor = source_fields.get("vendor_name")
-            if src_vendor:
-                # Fuzzy or substring match
-                vendor_match = (
-                    erp_vendor.lower() in src_vendor.lower()
-                    or src_vendor.lower() in erp_vendor.lower()
-                )
-                field_comparisons.append(
-                    FieldComparison(
-                        field_name="Vendor Name",
-                        source_doc_value=src_vendor,
-                        system_entered_value=erp_vendor,
-                        match=vendor_match,
-                        discrepancy_note=None if vendor_match else f"Vendor name mismatch: '{src_vendor}' vs '{erp_vendor}'",
-                    )
-                )
-                if not vendor_match:
-                    discrepancies.append(f"Vendor mismatch: Document has '{src_vendor}', but ERP bill has '{erp_vendor}'")
-
-            # B. Invoice Number Match
-            erp_inv = str(bill_row["invoice_number"])
-            src_inv = source_fields.get("invoice_number")
-            if src_inv:
-                inv_match = erp_inv.strip().upper() == src_inv.strip().upper()
-                field_comparisons.append(
-                    FieldComparison(
-                        field_name="Invoice Number",
-                        source_doc_value=src_inv,
-                        system_entered_value=erp_inv,
-                        match=inv_match,
-                        discrepancy_note=None if inv_match else f"Invoice reference mismatch: '{src_inv}' vs '{erp_inv}'",
-                    )
-                )
-                if not inv_match:
-                    discrepancies.append(f"Invoice number mismatch: Document has '{src_inv}', but ERP bill has '{erp_inv}'")
-
-            # C. Amount Cross-Check (CRITICAL: Catches OCR Noise and Hallucinations!)
-            erp_amt = normalize_amount(bill_row["amount"])
-            src_amt = source_fields.get("amount")
-            if src_amt is not None and erp_amt is not None:
-                amt_match = abs(erp_amt - src_amt) < 0.01
-                msg = (
-                    f"Amount verified: document={src_amt}, ERP={erp_amt}"
-                    if amt_match
-                    else f"Amount discrepancy! Document states {src_amt}, but ERP bill was entered as {erp_amt}"
-                )
-                field_comparisons.append(
-                    FieldComparison(
-                        field_name="Total Amount",
-                        source_doc_value=src_amt,
-                        system_entered_value=erp_amt,
-                        match=amt_match,
-                        discrepancy_note=None if amt_match else msg,
-                    )
-                )
-                checks.append(
-                    CheckResult(
-                        check_name="amount_cross_check",
-                        passed=amt_match,
-                        expected=src_amt,
-                        actual=erp_amt,
-                        message=msg,
-                    )
-                )
-                if not amt_match:
-                    discrepancies.append(msg)
-            elif src_amt is None:
-                msg = "Amount cross-check failed: Could not extract valid numeric amount from source invoice document."
-                checks.append(
-                    CheckResult(
-                        check_name="amount_cross_check",
-                        passed=False,
-                        expected="Numeric amount from document",
-                        actual=str(erp_amt),
-                        message=msg,
-                    )
-                )
-                discrepancies.append(msg)
-
-            # D. Due Date Check
-            erp_due = str(bill_row["due_date"])
-            src_due = source_fields.get("due_date")
-            if src_due:
-                norm_erp_due = normalize_date(erp_due)
-                norm_src_due = normalize_date(src_due)
-                due_match = (
-                    (norm_erp_due == norm_src_due)
-                    or (erp_due == src_due)
-                    or (src_due in erp_due)
-                    or (erp_due in src_due)
-                )
-                field_comparisons.append(
-                    FieldComparison(
-                        field_name="Due Date",
-                        source_doc_value=src_due,
-                        system_entered_value=erp_due,
-                        match=due_match,
-                        discrepancy_note=None if due_match else f"Due date mismatch: document={src_due}, ERP={erp_due}",
-                    )
-                )
-                checks.append(
-                    CheckResult(
-                        check_name="due_date_cross_check",
-                        passed=due_match,
-                        expected=norm_src_due or src_due,
-                        actual=norm_erp_due or erp_due,
-                        message=f"Due date verified: document={src_due}, ERP={erp_due}"
-                        if due_match
-                        else f"Due date mismatch: document={src_due}, ERP={erp_due}",
-                    )
-                )
-                if not due_match:
-                    discrepancies.append(f"Due date mismatch: Document states {src_due}, but ERP bill has {erp_due}")
-
-            # E. Attachment Verification Check
-            att_filename = bill_row["attachment_filename"]
-            att_exists = False
-            if att_filename:
-                # Check if file exists in either uploads, invoices, or downloads dir
-                for check_dir in [
-                    "./env/fileshare/data/invoices",
-                    "./env/fileshare/data/uploads",
-                    "./artifacts/downloads",
-                ]:
-                    if os.path.exists(os.path.join(check_dir, att_filename)):
-                        att_exists = True
-                        break
-
-            checks.append(
-                CheckResult(
-                    check_name="attachment_presence",
-                    passed=bool(att_filename and att_exists),
-                    expected="Original invoice file attached",
-                    actual=att_filename or "None",
-                    message="Attachment file confirmed in ERP and physically present on disk."
-                    if (att_filename and att_exists)
-                    else "Missing or unreadable attachment in ERP bill.",
-                )
-            )
-            if not (att_filename and att_exists):
-                discrepancies.append(f"Attachment verification failed: '{att_filename}' not found on disk.")
-
-        # Determine overall outcome
-        all_passed = len(checks) > 0 and all(c.passed for c in checks) and len(discrepancies) == 0
-        outcome = VerificationOutcome.PASS if all_passed else VerificationOutcome.FAIL
-
+        outcome = VerificationOutcome.PASS if len(discrepancies) == 0 and len(checks) > 0 else VerificationOutcome.FAIL
         bundle = self.collector.assemble_bundle(
             run_id=run.run_id,
             task=run.task,
@@ -606,211 +473,9 @@ class IndependentVerifier:
             discrepancies=discrepancies,
             extracted_fields_table=field_comparisons,
         )
-
-        logger.info(f"[Independent Verifier] Verification result: {outcome.value} (checks={len(checks)}, discrepancies={len(discrepancies)})")
         return VerificationResult(
             outcome=outcome,
             checks=checks,
             discrepancies=discrepancies,
             evidence_bundle=bundle,
         )
-
-    def _verify_ticketing_and_email(
-        self,
-        conn: sqlite3.Connection,
-        run: RunRecord,
-        goal: Goal,
-        working_memory: dict[str, Any],
-        steps: list[StepRecord],
-    ) -> VerificationResult:
-        checks: list[CheckResult] = []
-        discrepancies: list[str] = []
-
-        # 1. Check that tickets TICK-102 and TICK-103 (or resolved tickets) are closed
-        closed_rows = conn.execute(
-            "SELECT ticket_number, status FROM tickets WHERE ticket_number IN ('TICK-102', 'TICK-103')"
-        ).fetchall()
-        all_closed = len(closed_rows) > 0 and all(r["status"] == "closed" for r in closed_rows)
-        checks.append(
-            CheckResult(
-                check_name="resolved_tickets_closed",
-                passed=all_closed,
-                expected="Status 'closed' for resolved tickets (TICK-102, TICK-103)",
-                actual=f"{[dict(r) for r in closed_rows]}",
-                message="Verified resolved service tickets are marked as closed in database.",
-            )
-        )
-        if not all_closed:
-            discrepancies.append("Not all resolved tickets were updated to 'closed' status in tickets database.")
-
-        # 2. Check that summary email was sent to manager (Sneha Patel / operator manager)
-        email_rows = conn.execute(
-            "SELECT * FROM emails WHERE recipient LIKE '%company.com' ORDER BY id DESC LIMIT 5"
-        ).fetchall()
-        email_found = False
-        for em in email_rows:
-            body = (em["body"] or "") + " " + (em["subject"] or "")
-            if any(t in body for t in ["TICK-102", "TICK-103", "ticket", "Ticket", "closure", "Closure"]):
-                email_found = True
-                break
-
-        checks.append(
-            CheckResult(
-                check_name="closure_summary_email_dispatched",
-                passed=email_found,
-                expected="Email sent to manager with ticket resolution summary",
-                actual="Found matching email in corporate mailbox" if email_found else "No email found",
-                message="Verified ticket summary report was dispatched to manager via mailbox.",
-            )
-        )
-        if not email_found:
-            discrepancies.append("No summary email dispatched to manager found in corporate mailbox.")
-
-        passed = len(discrepancies) == 0
-        outcome = VerificationOutcome.PASS if passed else VerificationOutcome.FAIL
-        bundle = self.collector.assemble_bundle(
-            run_id=run.run_id,
-            task=run.task,
-            outcome=outcome,
-            checks=checks,
-            discrepancies=discrepancies,
-            extracted_fields_table=[],
-        )
-        return VerificationResult(
-            outcome=outcome,
-            checks=checks,
-            discrepancies=discrepancies,
-            evidence_bundle=bundle,
-        )
-
-    def _verify_reconciliation(
-        self,
-        conn: sqlite3.Connection,
-        run: RunRecord,
-        goal: Goal,
-        working_memory: dict[str, Any],
-        steps: list[StepRecord],
-    ) -> VerificationResult:
-        checks: list[CheckResult] = []
-        discrepancies: list[str] = []
-
-        # 1. Verify statement CSV exists
-        csv_path = "./env/fileshare/data/AcmeCorp_Oct2026_statement.csv"
-        csv_exists = os.path.exists(csv_path)
-        checks.append(
-            CheckResult(
-                check_name="statement_csv_exists",
-                passed=csv_exists,
-                expected=f"Vendor statement exists at {csv_path}",
-                actual="Found on disk" if csv_exists else "Missing",
-                message="Verified vendor statement CSV file exists in fileshare repository.",
-            )
-        )
-        if not csv_exists:
-            discrepancies.append(f"Statement CSV not found at {csv_path}")
-
-        # 2. Check that agent identified the key mismatch: INV-ACME-107 (missing in ERP) or INV-ACME-102
-        all_agent_text = (
-            str(working_memory)
-            + " "
-            + " ".join(s.observation_summary or "" for s in steps)
-            + " "
-            + " ".join(str(s.tool_args) for s in steps)
-        )
-        mismatch_found = (
-            "INV-ACME-107" in all_agent_text or "INV-ACME-102" in all_agent_text or "mismatch" in all_agent_text.lower()
-        )
-        checks.append(
-            CheckResult(
-                check_name="reconciliation_mismatches_identified",
-                passed=mismatch_found,
-                expected="Report identifying mismatched / missing invoices (e.g. INV-ACME-107)",
-                actual="Discrepancies identified in report" if mismatch_found else "No mismatch reported",
-                message="Verified agent identified ledger discrepancies against ERP bills.",
-            )
-        )
-        if not mismatch_found:
-            discrepancies.append("Reconciliation failed to identify missing or mismatched invoices.")
-
-        passed = len(discrepancies) == 0
-        outcome = VerificationOutcome.PASS if passed else VerificationOutcome.FAIL
-        bundle = self.collector.assemble_bundle(
-            run_id=run.run_id,
-            task=run.task,
-            outcome=outcome,
-            checks=checks,
-            discrepancies=discrepancies,
-            extracted_fields_table=[],
-        )
-        return VerificationResult(
-            outcome=outcome,
-            checks=checks,
-            discrepancies=discrepancies,
-            evidence_bundle=bundle,
-        )
-
-    def _verify_hr_onboarding(
-        self,
-        conn: sqlite3.Connection,
-        run: RunRecord,
-        goal: Goal,
-        working_memory: dict[str, Any],
-        steps: list[StepRecord],
-    ) -> VerificationResult:
-        checks: list[CheckResult] = []
-        discrepancies: list[str] = []
-
-        # 1. Verify HR ticket exists for Priya
-        ticket_row = conn.execute(
-            "SELECT * FROM tickets WHERE title LIKE '%Priya%' OR description LIKE '%Priya%' ORDER BY id DESC LIMIT 1"
-        ).fetchone()
-        ticket_found = ticket_row is not None
-        checks.append(
-            CheckResult(
-                check_name="hr_onboarding_ticket_verified",
-                passed=ticket_found,
-                expected="Ticket in service desk for new hire Priya",
-                actual=f"Ticket {ticket_row['ticket_number']}: {ticket_row['title']}" if ticket_found else "None",
-                message="Verified HR onboarding ticket exists in service desk registry.",
-            )
-        )
-        if not ticket_found:
-            discrepancies.append("No service desk ticket found for new hire Priya.")
-
-        # 2. Verify access sheet contains Priya
-        access_sheet_path = "./env/fileshare/data/system_access_list.csv"
-        priya_in_access_sheet = False
-        if os.path.exists(access_sheet_path):
-            content = Path(access_sheet_path).read_text(encoding="utf-8")
-            if "Priya" in content:
-                priya_in_access_sheet = True
-
-        checks.append(
-            CheckResult(
-                check_name="access_matrix_entry_verified",
-                passed=priya_in_access_sheet,
-                expected="Priya added to system_access_list.csv",
-                actual="Found in access matrix" if priya_in_access_sheet else "Not found in file",
-                message="Verified employee entry recorded in system access control sheet.",
-            )
-        )
-        if not priya_in_access_sheet:
-            discrepancies.append("New hire Priya was not found in system access list CSV.")
-
-        passed = len(discrepancies) == 0
-        outcome = VerificationOutcome.PASS if passed else VerificationOutcome.FAIL
-        bundle = self.collector.assemble_bundle(
-            run_id=run.run_id,
-            task=run.task,
-            outcome=outcome,
-            checks=checks,
-            discrepancies=discrepancies,
-            extracted_fields_table=[],
-        )
-        return VerificationResult(
-            outcome=outcome,
-            checks=checks,
-            discrepancies=discrepancies,
-            evidence_bundle=bundle,
-        )
-

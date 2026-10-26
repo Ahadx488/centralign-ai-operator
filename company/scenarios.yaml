@@ -1,0 +1,28 @@
+# Standard Demonstration & Evaluation Scenarios for CentrAlign AI
+
+1:
+  name: "Happy Path Invoice Flow"
+  description: "Find latest invoice from Acme Corp Ltd, extract details, and post bill to Acme ERP."
+  task: "Find the latest invoice from Acme Corp Ltd, extract the amount and due date, enter it into our internal ERP system, and report when finished."
+  faults: {}
+
+2:
+  name: "Fault Recovery (Session Expiry Mid-Task)"
+  description: "Mid-task session expiration during ERP navigation -> auto-detects auth loss, re-authenticates via system vault, and completes cleanly."
+  task: "Navigate to Acme ERP bills register and view the pending entries."
+  faults:
+    session_expiry_mid_task: true
+    session_expiry_target: "erp"
+
+3:
+  name: "Ambiguous Vendor Clarification"
+  description: "Discovers ambiguity ('Acme Corp' matches Ltd vs Inc) -> pauses in WAITING_USER -> human clarifies -> finishes cleanly."
+  task: "Find the latest invoice from Acme Corp"
+  faults: {}
+
+4:
+  name: "Duplicate Invoice Detection & Prevention"
+  description: "Attempting to re-enter INV-ACME-101 -> detects ERP 409 rejection -> prevents duplicate -> verifies exactly 1 bill exists."
+  task: "Process invoice INV-ACME-101 for Acme Corp Ltd"
+  faults:
+    duplicate_invoice_rejection: true

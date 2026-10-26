@@ -187,6 +187,13 @@ class ContextManager:
         sections.append("\n## YOUR NEXT STEP")
         sections.append(
             "Determine the next single action to take to advance the active intent.\n"
+            "CRITICAL: Always supply the required keyword arguments in the `args` dictionary:\n"
+            "- For `browser_open_url`: `args={'url': 'http://...'}`\n"
+            "- For `browser_type_text`: `args={'target': '<element ref/id/selector>', 'text': '<value>'}`\n"
+            "- For `browser_click`: `args={'target': '<button ref/id/text>'}`\n"
+            "- For `browser_download_file`: `args={'url': '...', 'save_dir': 'artifacts/downloads'}`\n"
+            "- For `files_read_file`: `args={'path': '...'}`\n"
+            "- For `browser_upload_file`: `args={'target': '<input name/id>', 'file_path': '...'}`\n"
             "If all intents are satisfied and success criteria are confirmed, return an action with `is_finish: true`."
         )
 

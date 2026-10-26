@@ -13,7 +13,15 @@ from core.llm.models import LLMResponse
 from core.runs.manager import RunManager
 from core.runs.models import RunStatus
 from core.tools import register_default_tools, tool_registry
+from env.faults.manager import fault_manager
 from tests.conftest import BASE_URL
+
+
+@pytest.fixture(autouse=True)
+def reset_server_faults():
+    fault_manager.reset_faults()
+    yield
+    fault_manager.reset_faults()
 
 
 @pytest.mark.asyncio
@@ -216,7 +224,7 @@ async def test_end_to_end_invoice_flow_happy_path(tmp_path):
             parsed=AgentAction(
                 thought="Clicking ERP login button",
                 tool="click",
-                args={"target": "Sign In to Acme ERP"},
+                args={"target": "#erp-submit-btn"},
             ),
             provider="fake",
         )

