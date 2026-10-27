@@ -324,6 +324,12 @@ async def execute_eval_task(task_var: EvalTaskVariant) -> EvalTaskResult:
             await set_server_faults({"missing_portal_invoice": True})
             print("\n  [Continuous Learning] Running Trial 1 (Unoptimized / Encountering missing portal invoice)...")
             run_rec_1 = await executor.run(task_var.task)
+            if run_rec_1.status == RunStatus.WAITING_APPROVAL:
+                inbox = ApprovalInbox(db_path=RUNS_DB_PATH)
+                req = inbox.get_by_run_id(run_rec_1.run_id)
+                if req:
+                    inbox.decide(req.approval_id, decision="APPROVE", decided_by="eval_admin")
+                run_rec_1 = await executor.resume(run_rec_1.run_id, approval_granted=True)
             steps_1 = run_rec_1.step_count
             print(f"  [Continuous Learning] Trial 1 Completed in {steps_1} steps. (Status: {run_rec_1.status.value})")
 
@@ -332,13 +338,30 @@ async def execute_eval_task(task_var: EvalTaskVariant) -> EvalTaskResult:
 
             # 4. Run 2: Same task executed with learned lesson retrieved
             print("  [Continuous Learning] Running Trial 2 (With Retrieved Lessons applied)...")
-            run_rec = await executor.run(task_var.task)
+            run_rec_2 = await executor.run(task_var.task)
+            if run_rec_2.status == RunStatus.WAITING_APPROVAL:
+                inbox = ApprovalInbox(db_path=RUNS_DB_PATH)
+                req = inbox.get_by_run_id(run_rec_2.run_id)
+                if req:
+                    inbox.decide(req.approval_id, decision="APPROVE", decided_by="eval_admin")
+                run_rec_2 = await executor.resume(run_rec_2.run_id, approval_granted=True)
+            run_rec = run_rec_2
             steps_2 = run_rec.step_count
             print(f"  [Continuous Learning] Trial 2 Completed in {steps_2} steps. (Status: {run_rec.status.value})")
             print(f"  [Continuous Learning Scorecard] Step comparison: Run 1={steps_1} steps vs Run 2={steps_2} steps")
 
         else:
-            run_rec = await executor.run(task_var.task)
+            init_run = await executor.run(task_var.task)
+            if init_run.status == RunStatus.WAITING_APPROVAL:
+                inbox = ApprovalInbox(db_path=RUNS_DB_PATH)
+                req = inbox.get_by_run_id(init_run.run_id)
+                if req:
+                    inbox.decide(req.approval_id, decision="APPROVE", decided_by="eval_admin")
+                run_rec = await executor.resume(init_run.run_id, approval_granted=True)
+            elif init_run.status == RunStatus.WAITING_USER:
+                run_rec = await executor.resume(init_run.run_id, human_input="Acme Corp Ltd")
+            else:
+                run_rec = init_run
 
     except Exception as e:
         elapsed = time.monotonic() - t0

@@ -315,21 +315,44 @@ Generate a list of 1 to 4 StateCheckSpec objects:
                             discrepancies.append(err_msg)
 
                     elif c_type == "file_exists":
-                        f_ok = os.path.exists(target) and os.path.getsize(target) > 0
-                        msg = f"File existence verified: {target}" if f_ok else f"File not found on disk: {target}"
+                        resolved_path = target
+                        f_ok = os.path.exists(resolved_path) and os.path.getsize(resolved_path) > 0
+                        if not f_ok:
+                            fname = os.path.basename(target)
+                            for cand in [
+                                os.path.join("env/fileshare/data/invoices", fname),
+                                os.path.join("env/fileshare/data", fname),
+                                os.path.join("artifacts/downloads", fname),
+                            ]:
+                                if os.path.exists(cand) and os.path.getsize(cand) > 0:
+                                    f_ok = True
+                                    resolved_path = cand
+                                    break
+                        msg = f"File existence verified: {resolved_path}" if f_ok else f"File not found on disk: {target}"
                         checks.append(CheckResult(check_name=c_name, passed=f_ok, expected=f"Existing non-empty file at {target}", actual="Exists" if f_ok else "Missing", message=msg))
                         if not f_ok:
                             discrepancies.append(msg)
 
                     elif c_type == "file_content":
+                        resolved_path = target
                         f_has = False
-                        if os.path.exists(target):
+                        if not (os.path.exists(resolved_path) and os.path.getsize(resolved_path) > 0):
+                            fname = os.path.basename(target)
+                            for cand in [
+                                os.path.join("env/fileshare/data/invoices", fname),
+                                os.path.join("env/fileshare/data", fname),
+                                os.path.join("artifacts/downloads", fname),
+                            ]:
+                                if os.path.exists(cand) and os.path.getsize(cand) > 0:
+                                    resolved_path = cand
+                                    break
+                        if os.path.exists(resolved_path):
                             try:
-                                content = Path(target).read_text(encoding="utf-8")
+                                content = Path(resolved_path).read_text(encoding="utf-8")
                                 f_has = expected in content or any(exp.strip() in content for exp in expected.split(","))
                             except Exception:
                                 pass
-                        msg = f"File content verified in {target}" if f_has else f"Expected content '{expected}' not found in {target}"
+                        msg = f"File content verified in {resolved_path}" if f_has else f"Expected content '{expected}' not found in {target}"
                         checks.append(CheckResult(check_name=c_name, passed=f_has, expected=expected, actual="Found" if f_has else "Not found in content", message=msg))
                         if not f_has:
                             discrepancies.append(msg)

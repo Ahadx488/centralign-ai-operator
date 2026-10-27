@@ -14,7 +14,7 @@ This SOP guides the processing and ingestion of incoming vendor invoices into th
 
 ## Data Extraction Rules
 Extract the following fields from the invoice document:
-- **Vendor Name**: Match against approved ERP vendors. If ambiguous (e.g. "Apex Ltd" vs "Apex Inc"), clarify before submitting.
+- **Vendor Name**: Match against approved ERP vendors. If ambiguous (e.g. a request specifies "Acme Corp" which matches both "Acme Corp Ltd" and "Acme Corp Inc"), you MUST call the 'ask_user' tool to ask the user which entity to process before proceeding.
 - **Invoice Number**: Alphanumeric reference code.
 - **Invoice Date & Due Date**: Standardize to `YYYY-MM-DD`.
 - **Total Amount**: Numeric amount.

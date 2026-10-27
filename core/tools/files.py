@@ -8,7 +8,7 @@ import os
 import tempfile
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pypdf import PdfReader
 
 from core.tools.registry import BaseTool, RiskTier, ToolResult
@@ -155,6 +155,16 @@ class ReadFileTool(BaseTool):
 class WriteFileArgs(BaseModel):
     path: str = Field(description="File path to write")
     content: str = Field(description="String content to write to file")
+
+    @model_validator(mode="before")
+    @classmethod
+    def map_aliases(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "content" not in data and "text" in data:
+                data["content"] = data["text"]
+            if "path" not in data and "file_path" in data:
+                data["path"] = data["file_path"]
+        return data
 
 
 class WriteFileTool(BaseTool):
