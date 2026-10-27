@@ -264,6 +264,9 @@ class LLMClient(abc.ABC):
             except LLMRetryableError as e:
                 last_error = e
                 sleep_time = e.retry_after if e.retry_after is not None else backoff
+                if sleep_time > 120:
+                    logger.error(f"Rate limit retry delay ({sleep_time}s) exceeds max wait (120s). Failing fast: {e}")
+                    raise LLMError(f"Rate limit quota exceeded: {e}") from e
                 logger.warning(
                     "Attempt %d/%d failed with retryable error: %s. Retrying in %.3fs...",
                     attempt,
